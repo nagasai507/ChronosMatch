@@ -31,8 +31,12 @@ class Order:
             raise ValueError("order_id must not be empty")
         if not isinstance(self.side, OrderSide):
             raise TypeError("side must be an OrderSide value")
+        if not isinstance(self.price, int) or isinstance(self.price, bool):
+            raise TypeError("price must be an integer")
         if self.price <= 0:
             raise ValueError("price must be a positive integer tick")
+        if not isinstance(self.quantity, int) or isinstance(self.quantity, bool):
+            raise TypeError("quantity must be an integer")
         if self.quantity <= 0:
             raise ValueError("quantity must be a positive integer")
         if self.timestamp < 0:
