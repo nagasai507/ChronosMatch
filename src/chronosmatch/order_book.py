@@ -1,14 +1,6 @@
-"""Order-book interface. Implementation owner: Member 2.
+"""Order-book interface for live orders."""
 
-Required behavior:
-- keep buy and sell orders separate;
-- best bid is the highest-priced live buy order;
-- best ask is the lowest-priced live sell order;
-- at equal prices, older accepted orders have priority (FIFO);
-- never expose orders whose remaining quantity is zero.
-"""
-
-from .models import Order
+from .models import Order, OrderSide
 
 
 class OrderBook:
@@ -19,17 +11,40 @@ class OrderBook:
         self._asks: list[Order] = []
 
     def add_order(self, order: Order) -> None:
-        """Add an unmatched order to the appropriate side."""
-        raise NotImplementedError("Member 2: implement OrderBook.add_order")
+        """Add an order to the appropriate side."""
+        if order.remaining_quantity <= 0:
+            return
+
+        if order.side == OrderSide.BUY:
+            self._bids.append(order)
+            self._bids.sort(
+                key=lambda o: (-o.price, o.timestamp)
+            )
+        elif order.side == OrderSide.SELL:
+            self._asks.append(order)
+            self._asks.sort(
+                key=lambda o: (o.price, o.timestamp)
+            )
 
     def get_best_bid(self) -> Order | None:
-        """Return the highest-priority live buy order, or None if there is no bid."""
-        raise NotImplementedError("Member 2: implement OrderBook.get_best_bid")
+        """Return the highest-priority live buy order."""
+        for order in self._bids:
+            if order.remaining_quantity > 0:
+                return order
+        return None
 
     def get_best_ask(self) -> Order | None:
-        """Return the highest-priority live sell order, or None if there is no ask."""
-        raise NotImplementedError("Member 2: implement OrderBook.get_best_ask")
+        """Return the highest-priority live sell order."""
+        for order in self._asks:
+            if order.remaining_quantity > 0:
+                return order
+        return None
 
     def remove_order(self, order_id: str) -> bool:
-        """Remove a live order by ID; return True if it was found."""
-        raise NotImplementedError("Member 2: implement OrderBook.remove_order")
+        """Remove an order by ID; return True if found."""
+        for orders in (self._bids, self._asks):
+            for index, order in enumerate(orders):
+                if order.order_id == order_id:
+                    orders.pop(index)
+                    return True
+        return False
