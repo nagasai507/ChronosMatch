@@ -118,3 +118,25 @@ def test_trade_rejects_non_positive_price() -> None:
             price=0,
             quantity=5,
         )
+
+
+def test_trade_rejects_non_integer_price() -> None:
+    with pytest.raises((TypeError, ValueError)):
+        Trade(
+            trade_id="T-1",
+            buy_order_id="B-1",
+            sell_order_id="S-1",
+            price=100.5,
+            quantity=5,
+        )
+
+
+def test_trade_rejects_non_integer_quantity() -> None:
+    with pytest.raises((TypeError, ValueError)):
+        Trade(
+            trade_id="T-1",
+            buy_order_id="B-1",
+            sell_order_id="S-1",
+            price=100,
+            quantity=5.5,
+        )

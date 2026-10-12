@@ -63,8 +63,12 @@ class Trade:
             raise ValueError("trade_id must not be empty")
         if not self.buy_order_id.strip() or not self.sell_order_id.strip():
             raise ValueError("trade order IDs must not be empty")
+        if not isinstance(self.price, int) or isinstance(self.price, bool):
+            raise TypeError("trade price must be an integer")
         if self.price <= 0:
             raise ValueError("trade price must be positive")
+        if not isinstance(self.quantity, int) or isinstance(self.quantity, bool):
+            raise TypeError("trade quantity must be an integer")
         if self.quantity <= 0:
             raise ValueError("trade quantity must be positive")
         if self.timestamp < 0:
