@@ -79,7 +79,7 @@ class RingBuffer:
             self.name = self._shm.name
             self._memory = self._shm.buf
 
-            if self._shm.size != total_size:
+            if self._shm.size < total_size:
                 self._memory.release()
                 self._shm.close()
                 self._closed = True
