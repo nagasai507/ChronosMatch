@@ -13,7 +13,7 @@ import struct
 from dataclasses import dataclass
 from multiprocessing import Lock
 from multiprocessing.shared_memory import SharedMemory
-
+from typing import Iterable
 
 ORDER_RECORD = struct.Struct("<QBQQQ")
 RECORD_SIZE = ORDER_RECORD.size
@@ -46,10 +46,8 @@ class RingBuffer:
     ):
         if isinstance(capacity, bool) or not isinstance(capacity, int):
             raise TypeError("capacity must be an integer")
-
         if capacity <= 0:
             raise ValueError("capacity must be positive")
-
         if not create and (name is None or lock is None):
             raise ValueError(
                 "Attaching requires a shared-memory name and shared lock"
@@ -64,14 +62,10 @@ class RingBuffer:
 
         if create:
             self._shm = SharedMemory(
-                name=name,
-                create=True,
-                size=total_size,
+                name=name, create=True, size=total_size
             )
             self.name = self._shm.name
             self._memory = self._shm.buf
-
-            # Initialize shared metadata.
             with self.lock:
                 HEADER.pack_into(self._memory, 0, 0, 0, 0)
         else:
@@ -100,7 +94,6 @@ class RingBuffer:
             order.quantity,
             order.timestamp_ns,
         )
-
         names = (
             "order_id",
             "side",
@@ -115,16 +108,14 @@ class RingBuffer:
 
         if not 0 <= order.order_id <= UINT64_MAX:
             raise ValueError("order_id must fit in unsigned 64-bit")
-
         if order.side not in (0, 1):
             raise ValueError("side must be 0 (BUY) or 1 (SELL)")
-
         if not 0 <= order.price <= UINT64_MAX:
             raise ValueError("price must fit in unsigned 64-bit")
-
         if not 1 <= order.quantity <= UINT64_MAX:
-            raise ValueError("quantity must be a positive unsigned 64-bit integer")
-
+            raise ValueError(
+                "quantity must be a positive unsigned 64-bit integer"
+            )
         if not 0 <= order.timestamp_ns <= UINT64_MAX:
             raise ValueError("timestamp_ns must fit in unsigned 64-bit")
 
@@ -137,12 +128,8 @@ class RingBuffer:
             raise ValueError(
                 f"record must be exactly {RECORD_SIZE} bytes"
             )
-
         order = BinaryOrder(*ORDER_RECORD.unpack(data))
-
-        # Reuse the encoder's validation rules.
         RingBuffer.encode(order)
-
         return order
 
     def _ensure_open(self) -> None:
@@ -152,56 +139,81 @@ class RingBuffer:
     def _state(self) -> tuple[int, int, int]:
         return HEADER.unpack_from(self._memory, 0)
 
-    def write(self, order: BinaryOrder) -> bool:
-        """Write an order; return False if the buffer is full."""
-        self._ensure_open()
-        record = self.encode(order)
+    def write_many(self, orders: Iterable[BinaryOrder]) -> int:
+        """Write as many orders as fit, using one lock acquisition.
 
+        Orders are validated before modifying the shared buffer.
+        Returns the number written. If the buffer fills, remaining
+        orders are not written.
+        """
+        self._ensure_open()
+
+        # Validate and encode before taking the lock or changing state.
+        records = [self.encode(order) for order in orders]
+        if not records:
+            return 0
+
+        written = 0
         with self.lock:
             read_pos, write_pos, count = self._state()
+            available = self.capacity - count
+            written = min(len(records), available)
 
-            if count >= self.capacity:
-                return False
+            for index in range(written):
+                offset = HEADER_SIZE + write_pos * RECORD_SIZE
+                self._memory[offset:offset + RECORD_SIZE] = records[index]
+                write_pos = (write_pos + 1) % self.capacity
 
-            offset = HEADER_SIZE + write_pos * RECORD_SIZE
-            self._memory[offset:offset + RECORD_SIZE] = record
+            if written:
+                count += written
+                HEADER.pack_into(
+                    self._memory, 0, read_pos, write_pos, count
+                )
 
-            write_pos = (write_pos + 1) % self.capacity
-            count += 1
+        return written
 
-            HEADER.pack_into(
-                self._memory, 0, read_pos, write_pos, count
-            )
+    def read_many(self, max_items: int) -> list[BinaryOrder]:
+        """Read up to max_items FIFO orders using one lock acquisition."""
+        self._ensure_open()
 
-            return True
+        if isinstance(max_items, bool) or not isinstance(max_items, int):
+            raise TypeError("max_items must be an integer")
+        if max_items < 0:
+            raise ValueError("max_items cannot be negative")
+        if max_items == 0:
+            return []
+
+        records = []
+        with self.lock:
+            read_pos, write_pos, count = self._state()
+            amount = min(max_items, count)
+
+            for _ in range(amount):
+                offset = HEADER_SIZE + read_pos * RECORD_SIZE
+                records.append(
+                    bytes(self._memory[offset:offset + RECORD_SIZE])
+                )
+                read_pos = (read_pos + 1) % self.capacity
+
+            if amount:
+                count -= amount
+                HEADER.pack_into(
+                    self._memory, 0, read_pos, write_pos, count
+                )
+
+        return [self.decode(record) for record in records]
+
+    def write(self, order: BinaryOrder) -> bool:
+        """Write one order; return False if the buffer is full."""
+        return self.write_many((order,)) == 1
 
     def read(self) -> BinaryOrder | None:
-        """Read the oldest order; return None if the buffer is empty."""
-        self._ensure_open()
-
-        with self.lock:
-            read_pos, write_pos, count = self._state()
-
-            if count == 0:
-                return None
-
-            offset = HEADER_SIZE + read_pos * RECORD_SIZE
-            record = bytes(
-                self._memory[offset:offset + RECORD_SIZE]
-            )
-
-            read_pos = (read_pos + 1) % self.capacity
-            count -= 1
-
-            HEADER.pack_into(
-                self._memory, 0, read_pos, write_pos, count
-            )
-
-            return self.decode(record)
+        """Read one FIFO order; return None if the buffer is empty."""
+        orders = self.read_many(1)
+        return orders[0] if orders else None
 
     def __len__(self) -> int:
         self._ensure_open()
-
         with self.lock:
             _, _, count = self._state()
             return count
@@ -210,7 +222,6 @@ class RingBuffer:
         """Close this process's view of shared memory."""
         if self._closed:
             return
-
         self._memory.release()
         self._shm.close()
         self._closed = True
@@ -221,7 +232,6 @@ class RingBuffer:
             raise RuntimeError(
                 "Only the process that created the buffer may unlink it"
             )
-
         self._shm.unlink()
 
     def __enter__(self):
