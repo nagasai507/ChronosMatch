@@ -1,6 +1,6 @@
 import pytest
 
-from src.chronosmatch.ring_buffer import (
+from chronosmatch.ring_buffer import (
     BinaryOrder,
     RECORD_SIZE,
     RingBuffer,
