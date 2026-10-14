@@ -246,3 +246,29 @@ def test_sell_order_trade_uses_resting_bid_price():
     assert trades[0].quantity == 2
     assert resting_buy.remaining_quantity == 1
     assert incoming_sell.remaining_quantity == 0
+
+def test_duplicate_order_id_is_rejected():
+    """An order ID cannot be reused for another active order."""
+    engine = MatchingEngine()
+
+    engine.submit_order(make_order("S1", OrderSide.SELL, 105, 3, 1))
+
+    with pytest.raises(ValueError, match="order"):
+        engine.submit_order(
+            make_order("S1", OrderSide.SELL, 106, 2, 2)
+        )
+
+
+def test_same_order_object_cannot_be_submitted_twice():
+    """Resubmitting an order must not create duplicate liquidity."""
+    engine = MatchingEngine()
+
+    order = make_order("B1", OrderSide.BUY, 100, 5, 1)
+    engine.submit_order(order)
+
+    with pytest.raises(ValueError, match="order"):
+        engine.submit_order(order)
+
+    best_bid = engine.order_book.get_best_bid()
+    assert best_bid is order
+    assert best_bid.remaining_quantity == 5

@@ -15,6 +15,9 @@ class MatchingEngine:
         self.trades: list[Trade] = []
         self._next_trade_id = 1
 
+        # Track every order ID accepted by this engine.
+        self._seen_order_ids: set[str] = set()
+
     def submit_order(self, order: Order) -> list[Trade]:
         """Submit an order and return the trades created by this submission."""
 
@@ -23,6 +26,9 @@ class MatchingEngine:
 
         if order.side not in (OrderSide.BUY, OrderSide.SELL):
             raise ValueError(f"Unsupported order side: {order.side!r}")
+
+        if order.order_id in self._seen_order_ids:
+            raise ValueError(f"Duplicate order ID: {order.order_id}")
 
         if order.remaining_quantity is None:
             order.remaining_quantity = order.quantity
@@ -34,6 +40,10 @@ class MatchingEngine:
             raise ValueError(
                 "remaining_quantity cannot exceed the original quantity"
             )
+
+        # A zero-quantity remainder does not enter the book or match.
+        # Reserve its ID so the same order cannot later be resubmitted.
+        self._seen_order_ids.add(order.order_id)
 
         if order.remaining_quantity == 0:
             return []
