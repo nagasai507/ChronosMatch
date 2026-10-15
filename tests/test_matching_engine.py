@@ -272,3 +272,38 @@ def test_same_order_object_cannot_be_submitted_twice():
     best_bid = engine.order_book.get_best_bid()
     assert best_bid is order
     assert best_bid.remaining_quantity == 5
+
+def test_partial_fill_across_price_levels_preserves_total_quantity():
+    """Multi-level matching conserves quantity and records every trade."""
+    engine = MatchingEngine()
+
+    best_ask = make_order("S1", OrderSide.SELL, 100, 2, 1)
+    next_ask = make_order("S2", OrderSide.SELL, 101, 3, 2)
+
+    engine.submit_order(best_ask)
+    engine.submit_order(next_ask)
+
+    incoming_buy = make_order("B1", OrderSide.BUY, 101, 4, 3)
+    trades = engine.submit_order(incoming_buy)
+
+    # The incoming order consumes both price levels.
+    assert len(trades) == 2
+    assert [(trade.sell_order_id, trade.price, trade.quantity)
+            for trade in trades] == [
+        ("S1", 100, 2),
+        ("S2", 101, 2),
+    ]
+
+    # Four incoming units = four traded units, leaving no BUY remainder.
+    assert incoming_buy.remaining_quantity == 0
+    assert sum(trade.quantity for trade in trades) == 4
+    assert engine.trades[-2:] == trades
+
+    # The second resting order retains one unit.
+    assert best_ask.remaining_quantity == 0
+    assert next_ask.remaining_quantity == 1
+
+    remaining_ask = engine.order_book.get_best_ask()
+    assert remaining_ask is next_ask
+    assert remaining_ask.remaining_quantity == 1
+    assert engine.order_book.get_best_bid() is None

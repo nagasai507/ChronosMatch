@@ -3,7 +3,7 @@
 
 import pytest
 import asyncio
-
+from chronosmatch.ring_buffer import BinaryOrder, RingBuffer
 from chronosmatch.market_firehose import write_orders_to_buffer
 from chronosmatch.market_simulator import MarketSimulator
 from chronosmatch.ring_buffer import RingBuffer
@@ -112,3 +112,54 @@ def test_simulator_firehose_ring_buffer_to_matching_engine():
             buffer.unlink()
 
     asyncio.run(run_test())
+
+def test_ring_buffer_orders_produce_a_real_trade():
+    from chronosmatch.ring_buffer import BinaryOrder, RingBuffer
+
+    buffer = RingBuffer(capacity=2)
+    try:
+        # BUY and SELL orders cross at price 100.
+        assert buffer.write_many([
+            BinaryOrder(1, 0, 100, 5, 1),
+            BinaryOrder(2, 1, 100, 3, 2),
+        ]) == 2
+
+        binary_orders = buffer.read_many(2)
+        assert len(binary_orders) == 2
+
+        engine = MatchingEngine()
+        generated_trades = []
+
+        for binary_order in binary_orders:
+            order = Order(
+                order_id=f"PIPE-{binary_order.order_id}",
+                side=(
+                    OrderSide.BUY
+                    if binary_order.side == 0
+                    else OrderSide.SELL
+                ),
+                price=binary_order.price,
+                quantity=binary_order.quantity,
+                timestamp=binary_order.timestamp_ns,
+            )
+            generated_trades.extend(engine.submit_order(order))
+
+        assert len(generated_trades) == 1
+
+        trade = generated_trades[0]
+        assert trade.buy_order_id == "PIPE-1"
+        assert trade.sell_order_id == "PIPE-2"
+        assert trade.price == 100
+        assert trade.quantity == 3
+
+        # The BUY order has 2 units remaining.
+        best_bid = engine.order_book.get_best_bid()
+        assert best_bid is not None
+        assert best_bid.order_id == "PIPE-1"
+        assert best_bid.remaining_quantity == 2
+
+        # The fully filled SELL order is removed.
+        assert engine.order_book.get_best_ask() is None
+    finally:
+        buffer.close()
+        buffer.unlink()
