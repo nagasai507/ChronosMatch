@@ -52,6 +52,7 @@ async def benchmark() -> None:
             simulator=simulator,
             buffer=buffer,
             count=count,
+            batch_size=64,
         )
 
         end_ns = time.perf_counter_ns()

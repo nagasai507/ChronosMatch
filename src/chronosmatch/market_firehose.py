@@ -1,3 +1,4 @@
+
 """Connect the asynchronous market simulator to the binary ring buffer."""
 
 import time
@@ -22,10 +23,12 @@ def convert_to_binary_order(order: Order) -> BinaryOrder:
 
     # SIM-1 becomes 1, SIM-2 becomes 2, and so on.
     prefix = "SIM-"
+
     if not order.order_id.startswith(prefix):
         raise ValueError("Expected a simulator order ID such as SIM-1")
 
     numeric_id = order.order_id[len(prefix):]
+
     if not numeric_id.isdigit():
         raise ValueError("Simulator order ID must end with a number")
 
@@ -47,8 +50,13 @@ async def write_orders_to_buffer(
     simulator: MarketSimulator,
     buffer: RingBuffer,
     count: int,
+    batch_size: int = 64,
 ) -> FirehoseStats:
-    """Generate orders and write them to the ring buffer."""
+    """Generate orders and write them in batches.
+
+    Orders that cannot fit in the buffer are counted as rejected.
+    The function does not retry rejected orders.
+    """
 
     if isinstance(count, bool) or not isinstance(count, int):
         raise TypeError("count must be an integer")
@@ -56,18 +64,35 @@ async def write_orders_to_buffer(
     if count < 0:
         raise ValueError("count must not be negative")
 
+    if isinstance(batch_size, bool) or not isinstance(batch_size, int):
+        raise TypeError("batch_size must be an integer")
+
+    if batch_size <= 0:
+        raise ValueError("batch_size must be positive")
+
     generated = 0
     successful_writes = 0
     buffer_full = 0
+    batch = []
 
-    async for order in simulator.generate_orders(count=count):
+    async for order in simulator.generate_orders(
+        count=count,
+        yield_every=batch_size,
+    ):
+        batch.append(convert_to_binary_order(order))
         generated += 1
-        binary_order = convert_to_binary_order(order)
 
-        if buffer.write(binary_order):
-            successful_writes += 1
-        else:
-            buffer_full += 1
+        if len(batch) >= batch_size:
+            written = buffer.write_many(batch)
+            successful_writes += written
+            buffer_full += len(batch) - written
+            batch.clear()
+
+    # Process any remaining orders that do not fill a complete batch.
+    if batch:
+        written = buffer.write_many(batch)
+        successful_writes += written
+        buffer_full += len(batch) - written
 
     return FirehoseStats(
         generated=generated,

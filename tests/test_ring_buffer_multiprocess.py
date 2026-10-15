@@ -1,10 +1,11 @@
+
 import multiprocessing as mp
 import time
 
 from src.chronosmatch.ring_buffer import (
     BinaryOrder,
-    HEADER_SIZE,
     RECORD_SIZE,
+    HEADER_SIZE,
     RingBuffer,
 )
 
@@ -39,7 +40,6 @@ def producer_worker(name, lock, result_queue):
 
         for order_id in range(1, ORDER_COUNT + 1):
             order = make_order(order_id)
-
             deadline = time.monotonic() + TIMEOUT_SECONDS
 
             while not buffer.write(order):
@@ -51,7 +51,7 @@ def producer_worker(name, lock, result_queue):
 
         result_queue.put(("producer_ok", ORDER_COUNT))
 
-    except BaseException as exc:
+    except Exception as exc:
         result_queue.put(("producer_error", repr(exc)))
         raise
 
@@ -98,7 +98,7 @@ def consumer_worker(name, lock, result_queue):
 
         result_queue.put(("consumer_ok", received))
 
-    except BaseException as exc:
+    except Exception as exc:
         result_queue.put(("consumer_error", repr(exc)))
         raise
 
@@ -114,11 +114,6 @@ def test_ring_buffer_transfers_orders_between_processes():
     results = ctx.Queue()
 
     owner = RingBuffer(CAPACITY, lock=lock)
-    print("Capacity:", CAPACITY)
-    print("Expected bytes:", HEADER_SIZE + CAPACITY * RECORD_SIZE)
-    print("Actual bytes:", owner._shm.size)
-    print("Shared memory name:", owner.name)
-
     consumer = ctx.Process(
         target=consumer_worker,
         args=(owner.name, lock, results),
@@ -129,14 +124,14 @@ def test_ring_buffer_transfers_orders_between_processes():
     )
 
     try:
-        # Start both independent processes.
+        assert owner._shm.size == HEADER_SIZE + CAPACITY * RECORD_SIZE
+
         consumer.start()
         producer.start()
 
         producer.join(TIMEOUT_SECONDS)
         consumer.join(TIMEOUT_SECONDS)
 
-        # Prevent hanging test processes.
         for process in (producer, consumer):
             if process.is_alive():
                 process.terminate()
