@@ -1,15 +1,20 @@
+
 """Windows-compatible SPSC ring buffer using shared memory.
 
-Binary record format: <QBQQQ (33 bytes)
-Side: 0 = BUY, 1 = SELL
+Binary record format: <QBQQQ (33 bytes).
+Side: 0 = BUY, 1 = SELL.
 
 Create the buffer in the parent process and pass its name and
 the same multiprocessing lock to producer and consumer processes.
 
 This implementation uses locking; it is NOT lock-free.
+
+Batch writes validate every input before modifying shared memory.
+A disk-backed temporary spool avoids retaining large batches in RAM.
 """
 
 import struct
+import tempfile
 from dataclasses import dataclass
 from multiprocessing import Lock
 from multiprocessing.shared_memory import SharedMemory
@@ -22,6 +27,9 @@ UINT64_MAX = (1 << 64) - 1
 # Shared metadata: read position, write position, item count.
 HEADER = struct.Struct("<QQQ")
 HEADER_SIZE = HEADER.size
+
+# Keep only a limited amount of staged data in memory before spilling to disk.
+SPOOL_MEMORY_LIMIT = 1024 * 1024  # 1 MiB
 
 
 @dataclass(frozen=True)
@@ -62,10 +70,13 @@ class RingBuffer:
 
         if create:
             self._shm = SharedMemory(
-                name=name, create=True, size=total_size
+                name=name,
+                create=True,
+                size=total_size,
             )
             self.name = self._shm.name
             self._memory = self._shm.buf
+
             with self.lock:
                 HEADER.pack_into(self._memory, 0, 0, 0, 0)
         else:
@@ -117,7 +128,9 @@ class RingBuffer:
                 "quantity must be a positive unsigned 64-bit integer"
             )
         if not 0 <= order.timestamp_ns <= UINT64_MAX:
-            raise ValueError("timestamp_ns must fit in unsigned 64-bit")
+            raise ValueError(
+                "timestamp_ns must fit in unsigned 64-bit"
+            )
 
         return ORDER_RECORD.pack(*values)
 
@@ -128,6 +141,7 @@ class RingBuffer:
             raise ValueError(
                 f"record must be exactly {RECORD_SIZE} bytes"
             )
+
         order = BinaryOrder(*ORDER_RECORD.unpack(data))
         RingBuffer.encode(order)
         return order
@@ -140,37 +154,64 @@ class RingBuffer:
         return HEADER.unpack_from(self._memory, 0)
 
     def write_many(self, orders: Iterable[BinaryOrder]) -> int:
-        """Write as many orders as fit, using one lock acquisition.
+        """Validate a complete batch, then write as many orders as fit.
 
-        Orders are validated before modifying the shared buffer.
-        Returns the number written. If the buffer fills, remaining
-        orders are not written.
+        Orders are encoded into a temporary spool during validation.
+        Large batches spill to disk instead of growing a Python list.
+
+        Invalid input leaves shared memory unchanged. The shared lock is
+        acquired once for the actual batch write.
+
+        Returns the number of orders written.
         """
         self._ensure_open()
 
-        # Validate and encode before taking the lock or changing state.
-        records = [self.encode(order) for order in orders]
-        if not records:
-            return 0
+        # Stage and validate the entire input before touching shared memory.
+        # SpooledTemporaryFile keeps up to SPOOL_MEMORY_LIMIT in memory,
+        # then automatically rolls the staged data to disk.
+        with tempfile.SpooledTemporaryFile(
+            max_size=SPOOL_MEMORY_LIMIT,
+            mode="w+b",
+        ) as staged:
+            total = 0
 
-        written = 0
-        with self.lock:
-            read_pos, write_pos, count = self._state()
-            available = self.capacity - count
-            written = min(len(records), available)
+            for order in orders:
+                staged.write(self.encode(order))
+                total += 1
 
-            for index in range(written):
-                offset = HEADER_SIZE + write_pos * RECORD_SIZE
-                self._memory[offset:offset + RECORD_SIZE] = records[index]
-                write_pos = (write_pos + 1) % self.capacity
+            if total == 0:
+                return 0
 
-            if written:
-                count += written
-                HEADER.pack_into(
-                    self._memory, 0, read_pos, write_pos, count
-                )
+            staged.seek(0)
 
-        return written
+            with self.lock:
+                read_pos, write_pos, count = self._state()
+                written = min(total, self.capacity - count)
+
+                for _ in range(written):
+                    record = staged.read(RECORD_SIZE)
+
+                    # Defensive check: staged records must be complete.
+                    if len(record) != RECORD_SIZE:
+                        raise RuntimeError(
+                            "Incomplete record in temporary spool"
+                        )
+
+                    offset = HEADER_SIZE + write_pos * RECORD_SIZE
+                    self._memory[offset:offset + RECORD_SIZE] = record
+                    write_pos = (write_pos + 1) % self.capacity
+
+                if written:
+                    count += written
+                    HEADER.pack_into(
+                        self._memory,
+                        0,
+                        read_pos,
+                        write_pos,
+                        count,
+                    )
+
+            return written
 
     def read_many(self, max_items: int) -> list[BinaryOrder]:
         """Read up to max_items FIFO orders using one lock acquisition."""
@@ -184,6 +225,7 @@ class RingBuffer:
             return []
 
         records = []
+
         with self.lock:
             read_pos, write_pos, count = self._state()
             amount = min(max_items, count)
@@ -191,14 +233,22 @@ class RingBuffer:
             for _ in range(amount):
                 offset = HEADER_SIZE + read_pos * RECORD_SIZE
                 records.append(
-                    bytes(self._memory[offset:offset + RECORD_SIZE])
+                    bytes(
+                        self._memory[
+                            offset:offset + RECORD_SIZE
+                        ]
+                    )
                 )
                 read_pos = (read_pos + 1) % self.capacity
 
             if amount:
                 count -= amount
                 HEADER.pack_into(
-                    self._memory, 0, read_pos, write_pos, count
+                    self._memory,
+                    0,
+                    read_pos,
+                    write_pos,
+                    count,
                 )
 
         return [self.decode(record) for record in records]
@@ -214,6 +264,7 @@ class RingBuffer:
 
     def __len__(self) -> int:
         self._ensure_open()
+
         with self.lock:
             _, _, count = self._state()
             return count
@@ -222,6 +273,7 @@ class RingBuffer:
         """Close this process's view of shared memory."""
         if self._closed:
             return
+
         self._memory.release()
         self._shm.close()
         self._closed = True
@@ -232,6 +284,7 @@ class RingBuffer:
             raise RuntimeError(
                 "Only the process that created the buffer may unlink it"
             )
+
         self._shm.unlink()
 
     def __enter__(self):
