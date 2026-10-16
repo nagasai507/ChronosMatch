@@ -217,3 +217,36 @@ def test_write_many_invalid_input_does_not_partially_write():
     finally:
         buffer.close()
         buffer.unlink()
+
+
+def test_full_buffer_recovers_after_read():
+    """A freed slot can accept a new order after the buffer is full."""
+    buffer = RingBuffer(capacity=2)
+
+    try:
+        first = make_order(1)
+        second = make_order(2)
+        third = make_order(3)
+
+        assert buffer.write(first) is True
+        assert buffer.write(second) is True
+        assert buffer.write(third) is False
+        assert len(buffer) == 2
+
+        # Reading frees a slot.
+        assert buffer.read() == first
+        assert len(buffer) == 1
+
+        # The buffer should accept another order now.
+        assert buffer.write(third) is True
+        assert len(buffer) == 2
+
+        # FIFO order must remain correct after recovery.
+        assert buffer.read() == second
+        assert buffer.read() == third
+        assert buffer.read() is None
+    finally:
+        buffer.close()
+        buffer.unlink()
+
+
