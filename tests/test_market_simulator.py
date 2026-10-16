@@ -117,3 +117,63 @@ def test_generated_orders_have_realistic_variation():
         assert len(quantities) > 1
 
     asyncio.run(run_test())
+
+
+def test_yield_every_does_not_change_generated_orders():
+    async def run_test():
+        simulator = MarketSimulator(seed=42)
+
+        orders = [
+            order
+            async for order in simulator.generate_orders(
+                count=10,
+                yield_every=3,
+            )
+        ]
+
+        assert len(orders) == 10
+        assert [order.order_id for order in orders] == [
+            f"SIM-{number}" for number in range(1, 11)
+        ]
+        assert [order.timestamp for order in orders] == list(range(10))
+
+    asyncio.run(run_test())
+
+
+def test_invalid_yield_every_is_rejected():
+    async def run_test():
+        simulator = MarketSimulator(seed=42)
+
+        invalid_values = [0, -1, "2", True]
+
+        for value in invalid_values:
+            try:
+                async for _ in simulator.generate_orders(
+                    count=1,
+                    yield_every=value,
+                ):
+                    pass
+            except (TypeError, ValueError):
+                continue
+
+            assert False, f"Expected an error for yield_every={value!r}"
+
+    asyncio.run(run_test())
+
+
+def test_invalid_count_is_rejected():
+    async def run_test():
+        invalid_values = [-1, "10", True]
+
+        for value in invalid_values:
+            simulator = MarketSimulator(seed=42)
+
+            try:
+                async for _ in simulator.generate_orders(count=value):
+                    pass
+            except (TypeError, ValueError):
+                continue
+
+            assert False, f"Expected an error for count={value!r}"
+
+    asyncio.run(run_test())

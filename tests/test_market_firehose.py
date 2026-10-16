@@ -108,3 +108,35 @@ def test_firehose_rejects_negative_count():
             buffer.unlink()
 
     asyncio.run(run_test())
+
+
+def test_firehose_is_compatible_with_batched_simulator_orders():
+    async def run_test():
+        buffer = RingBuffer(capacity=10)
+
+        try:
+            stats = await write_orders_to_buffer(
+                MarketSimulator(seed=42),
+                buffer,
+                count=7,
+                batch_size=3,
+            )
+
+            assert stats.generated == 7
+            assert stats.successful_writes == 7
+            assert stats.buffer_full == 0
+            assert len(buffer) == 7
+
+            orders = buffer.read_many(7)
+
+            assert len(orders) == 7
+            assert [order.order_id for order in orders] == list(range(1, 8))
+            assert all(order.side in (0, 1) for order in orders)
+            assert all(95 <= order.price <= 105 for order in orders)
+            assert all(1 <= order.quantity <= 100 for order in orders)
+
+        finally:
+            buffer.close()
+            buffer.unlink()
+
+    asyncio.run(run_test())
