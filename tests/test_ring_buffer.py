@@ -248,5 +248,16 @@ def test_full_buffer_recovers_after_read():
     finally:
         buffer.close()
         buffer.unlink()
+def test_closed_buffer_rejects_operations():
+    """Operations on a closed buffer should fail predictably."""
+    buffer = RingBuffer(capacity=2)
+    buffer.close()
 
+    with pytest.raises(ValueError, match="closed"):
+        buffer.write(make_order(1))
 
+    with pytest.raises(ValueError, match="closed"):
+        buffer.read()
+
+    with pytest.raises(ValueError, match="closed"):
+        len(buffer)
