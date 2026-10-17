@@ -116,3 +116,66 @@ def test_trade_is_immutable():
 
     with pytest.raises(AttributeError):
         trade.price = 200
+
+
+@pytest.mark.parametrize("timestamp", [1.5, "100", True])
+def test_order_rejects_invalid_timestamp_type(timestamp):
+    with pytest.raises(TypeError, match="timestamp"):
+        make_order(timestamp=timestamp)
+
+
+@pytest.mark.parametrize("timestamp", [1.5, "100", True])
+def test_trade_rejects_invalid_timestamp_type(timestamp):
+    with pytest.raises(TypeError, match="timestamp"):
+        make_trade(timestamp=timestamp)
+
+
+@pytest.mark.parametrize("remaining", [2.5, "2", True])
+def test_order_rejects_invalid_remaining_quantity_type(remaining):
+    with pytest.raises(TypeError, match="remaining_quantity"):
+        make_order(remaining_quantity=remaining)
+
+
+@pytest.mark.parametrize("order_id", [123, None, True])
+def test_order_rejects_invalid_id_type(order_id):
+    with pytest.raises(TypeError, match="order_id"):
+        make_order(order_id=order_id)
+
+
+@pytest.mark.parametrize("field", ["trade_id", "buy_order_id", "sell_order_id"])
+def test_trade_rejects_invalid_id_type(field):
+    with pytest.raises(TypeError):
+        make_trade(**{field: 123})
+
+
+@pytest.mark.parametrize("value", ["100", 1.5, True])
+@pytest.mark.parametrize("field", ["price", "quantity"])
+def test_order_rejects_invalid_numeric_field_types(field, value):
+    with pytest.raises(TypeError, match=field):
+        make_order(**{field: value})
+
+
+@pytest.mark.parametrize("value", ["100", 1.5, True])
+@pytest.mark.parametrize("field", ["price", "quantity"])
+def test_trade_rejects_invalid_numeric_field_types(field, value):
+    with pytest.raises(TypeError, match=field):
+        make_trade(**{field: value})
+
+
+def test_order_accepts_minimum_valid_values():
+    order = make_order(price=1, quantity=1, timestamp=0)
+    assert order.price == 1
+    assert order.quantity == 1
+    assert order.remaining_quantity == 1
+
+
+def test_trade_accepts_minimum_valid_values():
+    trade = make_trade(price=1, quantity=1, timestamp=0)
+    assert trade.price == 1
+    assert trade.quantity == 1
+    assert trade.timestamp == 0
+
+
+def test_order_accepts_remaining_quantity_equal_to_quantity():
+    order = make_order(quantity=5, remaining_quantity=5)
+    assert order.remaining_quantity == order.quantity
