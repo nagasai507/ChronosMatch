@@ -1,74 +1,108 @@
 # ChronosMatch
 
-### Zero-Copy High-Frequency Trading Engine
+### Zero-Copy-Style Order Matching and Market Simulation Engine
 
-ChronosMatch is an educational project that explores low-latency order processing, price-time-priority matching, inter-process communication (IPC), and performance measurement using Python and Cython.
-
-The project aims to build a simulated trading engine with a memory-mapped ring buffer, a limit order book, a matching engine, and a terminal-based market dashboard.
+ChronosMatch is an educational trading-engine prototype built to explore limit-order matching, price-time priority, shared-memory communication, simulated market order flow, and performance measurement. It includes a Python backend and a React dashboard for interacting with the simulation.
 
 > **Disclaimer:** ChronosMatch is an educational simulation. It is not connected to a live stock exchange and is not intended for real-money trading.
 
 ---
 
-## Project Objectives
+## Current Status
 
-- Implement a limit order book with price-time priority.
-- Build a matching engine that supports full fills, partial fills, and multiple executions.
-- Explore zero-copy-style IPC using Python `mmap` and `struct`.
-- Generate mock orders asynchronously using `asyncio`.
-- Explore Cython optimization for performance-critical matching logic.
-- Measure throughput and latency using reproducible benchmarks.
-- Persist executed trades to a database asynchronously.
-- Display market activity through a terminal-based dashboard.
+**Current verified milestone:** the local dashboard, FastAPI API, matching engine, order book, market simulator controls, and ring-buffer implementation are integrated in the development environment.
 
-## Technology Stack
+- The frontend displays API connection status, best bid, best ask, active orders, executed trades, and bid–ask spread.
+- Users can submit manual BUY and SELL orders through the dashboard.
+- The simulator can be started and stopped through API endpoints.
+- The dashboard displays recent trades and the order book.
+- A ring-buffer benchmark section presents previously recorded throughput results; these are historical measurements, not live telemetry.
+- The latest recorded full test run completed with **122 passed, 0 failed** in approximately 2.09 seconds. It emitted one Starlette deprecation warning related to the TestClient/HTTPX integration.
 
-| Technology          | Purpose                               |
-| ------------------- | ------------------------------------- |
-| Python 3.11+        | Core application and simulation       |
-| `mmap`              | Memory-mapped IPC buffer              |
-| `struct`            | Binary order encoding and decoding    |
-| `asyncio`           | Asynchronous mock-order generation    |
-| Cython              | Compiled matching-engine optimization |
-| `curses`            | Terminal-based market dashboard       |
-| `pytest`            | Automated testing                     |
-| SQLite / ClickHouse | Trade persistence target              |
-| Git and GitHub      | Version control and collaboration     |
-
-Some technologies are planned for later development and should not be considered implemented until their code and tests are available.
+Status is based on work verified locally during development. Re-run the commands in this README before a formal review or release.
 
 ---
 
-## Project Architecture
+## Features Implemented
+
+### Trading engine
+
+- Shared `Order` and `Trade` models.
+- Limit order book with best-bid and best-ask access.
+- Matching engine that records executions and updates remaining quantities.
+- Integer price ticks for comparisons.
+- Tests for models, order book, matching behavior, and integration.
+
+### Ring buffer and market simulation
+
+- Binary order records and shared-memory ring-buffer implementation.
+- Individual and batched write paths.
+- Buffer capacity, empty/full behavior, FIFO, cleanup, and multiprocess tests.
+- Market simulator and firehose modules for generating simulated orders.
+- Benchmark scripts for multiprocess ring-buffer throughput and traced memory usage.
+
+### API and web dashboard
+
+- FastAPI endpoints for health, order book, trades, order submission, and simulator control/status.
+- React + Vite dashboard.
+- Manual BUY/SELL order form.
+- Live polling of the API for order book, trades, and simulator status.
+- Bid–ask spread calculation when both best bid and best ask exist.
+- Responsive dark dashboard layout.
+- Recorded ring-buffer benchmark comparison displayed separately from live market data.
+
+### Automated tests
+
+The current test suite covers models, order book, matching engine, integration, ring buffer, market simulator, firehose, multiprocess behavior, and API endpoints.
+
+---
+
+## Technology Stack
+
+| Technology                      | Purpose                                                   |
+| ------------------------------- | --------------------------------------------------------- |
+| Python 3.11+                    | Core matching engine, models, simulation, and ring buffer |
+| FastAPI                         | HTTP API for dashboard integration                        |
+| Uvicorn                         | Local API server                                          |
+| Pydantic                        | API request validation                                    |
+| React                           | Interactive dashboard                                     |
+| Vite                            | Frontend development server and build tooling             |
+| `asyncio`                       | Asynchronous simulator task and API integration           |
+| `multiprocessing.shared_memory` | Shared-memory ring-buffer storage                         |
+| `struct`                        | Fixed-size binary order encoding                          |
+| `pytest`                        | Automated tests                                           |
+| HTTPX / FastAPI TestClient      | API endpoint tests                                        |
+| Git and GitHub                  | Version control and team collaboration                    |
+
+Some earlier project proposals mentioned Cython, `mmap`, `curses`, SQLite, and ClickHouse. Those are not described here as current integrated features; they should be added to the implemented stack only after their code and tests are integrated.
+
+---
+
+## Architecture
 
 ```text
-Market Simulator
-      |
-      | Binary order records
-      v
-Memory-Mapped Ring Buffer
-      |
-      | IPC consumer
-      v
-Order Decoder
-      |
-      v
-Matching Engine
-      |
-      +------> Limit Order Book
-      |
-      +------> Executed Trades
-                    |
-                    v
-           Asynchronous Ledger
-                    |
-                    v
-             SQLite / ClickHouse
+                         React + Vite Dashboard
+                                   |
+                              HTTP / JSON
+                                   |
+                           FastAPI application
+                      /       /      |       \
+                 /health  /orders  /trades  /orderbook
+                                   |
+                          Matching Engine
+                           /            \
+                    Limit Order Book   Trade Records
+                                   ^
+                                   |
+                            Market Simulator
 
-Market State ------> Terminal Dashboard
+        Shared-memory Ring Buffer
+        (separately tested IPC and benchmark component)
 ```
 
-The intended IPC design uses fixed-size binary records rather than JSON or pickle serialization. The implementation must still define buffer synchronization, full/empty behavior, and producer-consumer ownership.
+The web simulator currently submits generated orders to the matching engine. The ring buffer is implemented and tested as an IPC component, with separate benchmark scripts. Do not assume the web simulator is routed through a ring-buffer consumer unless that integration is explicitly completed and verified.
+
+---
 
 ## Repository Structure
 
@@ -77,121 +111,39 @@ ChronosMatch/
 ├── src/
 │   └── chronosmatch/
 │       ├── __init__.py
+│       ├── api.py
 │       ├── models.py
 │       ├── order_book.py
 │       ├── matching_engine.py
-│       ├── ring_buffer.py          # Week 1 planned module
-│       └── market_simulator.py     # Week 1 planned module
+│       ├── ring_buffer.py
+│       ├── market_simulator.py
+│       └── market_firehose.py
+├── frontend/
+│   ├── src/
+│   │   ├── App.jsx
+│   │   └── App.css
+│   ├── package.json
+│   └── vite.config.js
 ├── tests/
+│   ├── test_api.py
 │   ├── test_models.py
-│   └── test_integration.py
+│   ├── test_order_book.py
+│   ├── test_matching_engine.py
+│   ├── test_integration.py
+│   ├── test_ring_buffer.py
+│   ├── test_ring_buffer_multiprocess.py
+│   ├── test_market_simulator.py
+│   ├── test_market_firehose.py
+│   ├── benchmark_ring_buffer_memory.py
+│   ├── benchmark_ring_buffer_multiprocess.py
+│   └── benchmark_market_simulator.py
 ├── docs/
 │   └── INTERFACES.md
 ├── pyproject.toml
-├── .gitignore
 └── README.md
 ```
 
-The ring-buffer and market-simulator files are planned additions. Create them when their assigned implementation work begins.
-
----
-
-## Core Components
-
-### 1. Shared Models
-
-Module: `src/chronosmatch/models.py`
-
-Defines the shared data structures:
-
-- `OrderSide` — BUY and SELL.
-- `Order` — order ID, side, price, quantity, timestamp, and remaining quantity.
-- `Trade` — trade ID, buy and sell order IDs, execution price, quantity, and timestamp.
-
-Prices use integer ticks to avoid floating-point price comparisons.
-
-### 2. Limit Order Book
-
-Module: `src/chronosmatch/order_book.py`
-
-Maintains unmatched orders and exposes:
-
-- `add_order(order)`
-- `get_best_bid()`
-- `get_best_ask()`
-- `remove_order(order_id)`
-
-Expected rules:
-
-- Highest bid has priority.
-- Lowest ask has priority.
-- Orders at the same price follow FIFO.
-- Fully filled orders are not available as live orders.
-
-### 3. Matching Engine
-
-Module: `src/chronosmatch/matching_engine.py`
-
-Planned public method:
-
-```python
-submit_order(order) -> list[Trade]
-```
-
-Expected behavior:
-
-- Match compatible incoming orders against the best resting orders.
-- Execute at the resting order's price unless the team agrees on another rule.
-- Support partial fills and one order matching multiple resting orders.
-- Update remaining quantities.
-- Add only an unmatched remainder to the order book.
-- Return and record the trades created by the submission.
-
-### 4. Zero-Copy IPC Ring Buffer
-
-Planned module: `src/chronosmatch/ring_buffer.py`
-
-Week 1 implementation requirements:
-
-- Use `mmap` for memory-mapped storage.
-- Use `struct` for fixed-size binary records.
-- Implement write and read operations.
-- Handle capacity, empty/full states, and wraparound.
-- Define safe producer-consumer synchronization.
-- Avoid JSON and pickle for IPC order records.
-
-The record layout and public buffer API must be confirmed in [`docs/INTERFACES.md`](docs/INTERFACES.md) before dependent modules are finalized.
-
-### 5. Market Simulator
-
-Planned module: `src/chronosmatch/market_simulator.py`
-
-The simulator will:
-
-- Generate mock BUY and SELL orders.
-- Submit orders through the ring buffer.
-- Handle buffer backpressure.
-- Measure actual throughput.
-- Target **100,000 orders per second** during the Week 1 benchmark.
-
-The target is not a measured result. Any performance claim must include the actual benchmark result and test environment.
-
-### 6. Cython Matching Engine
-
-Planned for Week 2:
-
-- Move performance-critical matching logic into a `.pyx` module.
-- Use C-level types and suitable data structures.
-- Minimize Python-object interactions in the critical loop.
-- Validate behavior against the Python implementation.
-
-### 7. Terminal Dashboard and Trade Ledger
-
-Planned for later weeks:
-
-- Use `curses` to display the best bid, best ask, and spread.
-- Display market activity and large orders clearing multiple price levels.
-- Flush executed trades asynchronously to SQLite or ClickHouse.
+This tree reflects the expected current layout. Confirm names against the checked-out branch if files have changed.
 
 ---
 
@@ -199,19 +151,18 @@ Planned for later weeks:
 
 ### Requirements
 
-- Python 3.11 or newer
+- Python 3.11+
+- Node.js and npm
 - Git
-- Windows, Linux, or macOS
-- A C compiler may be required for the Cython build stage.
 
-### 1. Clone the Repository
+### 1. Clone the repository
 
-```bash
+```powershell
 git clone https://github.com/nagasai507/ChronosMatch.git
 cd ChronosMatch
 ```
 
-### 2. Create a Virtual Environment
+### 2. Create and activate the Python virtual environment
 
 Windows PowerShell:
 
@@ -220,189 +171,203 @@ python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 ```
 
-If PowerShell blocks activation, use an appropriate local execution-policy setting or activate the environment through your IDE.
+If your local virtual environment is stored outside the repository, activate that environment instead.
 
-Linux/macOS:
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-```
-
-### 3. Install Dependencies
+### 3. Install the Python project
 
 From the repository root:
 
-```bash
+```powershell
 python -m pip install --upgrade pip
 python -m pip install -e ".[dev]"
 ```
 
-### 4. Run Tests
+If the project extras do not install the API dependencies in your branch, install the dependencies listed in `pyproject.toml` and ensure FastAPI, Uvicorn, and HTTPX are available in the active environment.
 
-```bash
-python -m pytest -v
+### 4. Run the automated tests
+
+```powershell
+$env:PYTHONPATH = "src"
+python -m pytest -q
 ```
 
-Run a specific test file:
+To run only the API tests:
 
-```bash
-python -m pytest tests/test_models.py -v
-python -m pytest tests/test_integration.py -v
+```powershell
+$env:PYTHONPATH = "src"
+python -m pytest tests/test_api.py -v
 ```
 
-**Note:** Integration tests for matching behavior will pass only after the matching engine implements the required interface and behavior.
+The latest recorded full-suite result is **122 passed**. Re-run the tests after any changes; do not treat a past result as a guarantee about a different commit or environment.
 
 ---
 
-## Testing Strategy
+## Run the Backend
 
-ChronosMatch uses automated tests to validate correctness before optimization.
+From the repository root, with the virtual environment activated:
 
-### Model Tests
+```powershell
+$env:PYTHONPATH = "src"
+python -m uvicorn chronosmatch.api:app --reload --host 127.0.0.1 --port 8000
+```
 
-- Valid order initialization.
-- Invalid order fields.
-- Remaining-quantity validation.
-- Trade validation.
+Useful endpoints:
 
-### Order Book Tests
+| Endpoint            | Method | Purpose                                          |
+| ------------------- | ------ | ------------------------------------------------ |
+| `/`                 | GET    | API root information                             |
+| `/health`           | GET    | Health check                                     |
+| `/orderbook`        | GET    | Current bids, asks, and best prices              |
+| `/trades`           | GET    | Recorded trade executions                        |
+| `/orders`           | POST   | Submit a BUY or SELL order                       |
+| `/simulator/start`  | POST   | Start simulated order generation                 |
+| `/simulator/stop`   | POST   | Stop simulated order generation                  |
+| `/simulator/status` | GET    | Read simulator running state and generated count |
+| `/docs`             | GET    | Interactive Swagger API documentation            |
 
-- Empty-book behavior.
-- Best bid and best ask selection.
-- FIFO ordering at the same price.
-- Order removal.
-- Exclusion of fully filled orders.
+Example order body:
 
-### Matching Tests
+```json
+{
+  "side": "BUY",
+  "price": 100,
+  "quantity": 10
+}
+```
 
-- No match.
-- Exact fill.
-- Partial fill.
-- One incoming order filling multiple resting orders.
-- Price-time priority.
-- Correct trade history and remaining quantities.
-
-### IPC Tests
-
-- Binary encoding and decoding.
-- Buffer read/write operations.
-- Full and empty conditions.
-- Wraparound.
-- Producer-consumer correctness.
-- Resource cleanup.
-
-### Performance Tests
-
-Measure and report:
-
-- Orders successfully processed per second.
-- Processing latency.
-- Latency distribution, including median and high percentiles where appropriate.
-- Test workload, hardware, Python version, and relevant configuration.
-
-Use `time.perf_counter_ns()` for elapsed-time measurements. Do not present an unmeasured target as an achieved benchmark.
+Prices and quantities must be positive integers. The API validates malformed or invalid orders before submitting them to the matching engine.
 
 ---
 
-## Four-Week Development Roadmap
+## Run the Frontend
 
-### Week 1 — IPC and Market Firehose
+Open a second PowerShell terminal:
 
-- Implement the memory-mapped ring buffer using `mmap` and `struct`.
-- Implement the asynchronous mock-order producer.
-- Define and test the shared binary record format.
-- Measure throughput against the 100,000-orders-per-second target.
-- Complete and test the Python matching-engine baseline.
+```powershell
+cd frontend
+npm install
+```
 
-### Week 2 — Cython and Dashboard
+Start Vite on the development port used by the current local setup:
 
-- Implement the performance-critical matching logic in Cython.
-- Integrate the limit order book.
-- Build the `curses` terminal dashboard.
-- Verify matching correctness after integration.
+```powershell
+.\node_modules\.bin\vite.cmd --host 127.0.0.1 --port 5174 --strictPort
+```
 
-### Mid-Project Review
+Open [http://127.0.0.1:5174/](http://127.0.0.1:5174/) in a browser.
 
-Demonstrate:
-
-- One million orders transferred between two Python processes without pickling.
-- Correct matching behavior for compatible orders.
-- Automated test results.
-- Reproducible throughput and latency measurements.
-
-### Week 3 — Performance Optimization
-
-- Reduce Python overhead in the critical matching loop.
-- Measure latency using `time.perf_counter_ns()`.
-- Compare the Python baseline with the Cython implementation.
-- Document optimization results and trade-offs.
-
-### Week 4 — Persistence and Final Demo
-
-- Flush executed trades asynchronously to SQLite or ClickHouse.
-- Polish the dashboard.
-- Demonstrate large orders consuming multiple price levels.
-- Present architecture, correctness tests, benchmark methodology, and measured results.
+Keep both the frontend and backend terminals running while using the dashboard. The frontend expects the API at `http://127.0.0.1:8000`.
 
 ---
 
-## Team Responsibilities
+## Dashboard Demo Workflow
 
-| Team member     | Primary responsibility                                                           |
-| --------------- | -------------------------------------------------------------------------------- |
-| Sai — Team Lead | Integration, interface coordination, end-to-end tests, and performance reporting |
-| Joshitha        | Order book; proposed owner of the Week 1 ring buffer                             |
-| Ramya           | Shared models and model tests; proposed owner of the Week 1 market simulator     |
-| Shivam          | Matching engine and matching-engine tests                                        |
+1. Start the backend and frontend using the commands above.
+2. Confirm that the dashboard reports **API Connected**.
+3. Submit a SELL order, for example price `100`, quantity `10`.
+4. Submit a matching BUY order at price `100`, quantity `10`.
+5. Confirm that the trade appears in Recent Trades and the filled orders are removed from the active book.
+6. Start the market simulator and observe the generated-order count, order book, and trades.
+7. Stop the simulator and confirm that order generation stops.
+8. Observe the best bid, best ask, and spread when both sides of the book are available.
 
-Confirm the additional Week 1 workstream assignments with the relevant members before treating them as final.
+The dashboard's benchmark section contains recorded results and is not a live performance monitor.
 
 ---
 
-## Git and Collaboration Workflow
+## Tests and Benchmarks
 
-The team uses individual branches and a shared integration branch named `teamlead`.
+### Test suite
+
+The latest recorded test run:
+
+```text
+122 passed, 0 failed
+```
+
+A Starlette deprecation warning was also reported for the current TestClient/HTTPX integration. It did not fail the test suite and remains a cleanup item.
+
+### Previously recorded ring-buffer throughput benchmark
+
+| Mode                   |         Throughput |
+| ---------------------- | -----------------: |
+| Individual writes      |  96,383 orders/sec |
+| Batch writes           | 234,872 orders/sec |
+| Batch speedup          |              2.44× |
+| Throughput improvement |           +143.69% |
+
+These are previously recorded measurements. Performance depends on hardware, Python version, process scheduling, batch size, and workload. Re-run `tests/benchmark_ring_buffer_multiprocess.py` to refresh the measurements before presenting them as current results.
+
+### Memory benchmark
+
+A previous traced-memory run for 100,000 orders reported a peak of approximately 1,199.9 KiB for the optimized path. Treat this as a historical measurement and rerun `tests/benchmark_ring_buffer_memory.py` before using it in a formal report.
+
+Benchmark scripts are separate from the normal unit-test suite. Run them explicitly when collecting performance data.
+
+---
+
+## Current Limitations and Follow-up Work
+
+- The dashboard uses local in-memory state; restarting the API resets its current order book, trades, and simulator counters.
+- The web simulator currently feeds orders directly into the matching engine; ring-buffer IPC is tested separately.
+- Benchmark figures shown in the dashboard are historical measurements, not live telemetry.
+- API TestClient emits a Starlette deprecation warning that should be reviewed when updating compatible dependencies.
+- Persistent trade storage, database integration, and a production deployment are not currently documented as implemented features.
+- This project is a local educational simulation, not a production HFT system.
+
+---
+
+## Plan Until Mid-Project Review
+
+The target is a demonstrable, tested prototype with an explainable architecture and repeatable evidence. The following items are planned next; they are not all complete.
+
+### Milestone A — Stabilize the integrated prototype
+
+- [x] Run the React dashboard with the local FastAPI backend.
+- [x] Submit manual orders and view the order book and trades.
+- [x] Add simulator start, stop, and status controls.
+- [x] Display best bid, best ask, and bid–ask spread.
+- [x] Add API tests and run the full test suite (latest recorded result: 122 passed).
+- [ ] Review API simulator lifecycle and edge cases.
+- [ ] Resolve or document the TestClient deprecation warning.
+- [ ] Re-run all tests on the exact integration branch intended for review.
+
+### Milestone B — Validate IPC and performance
+
+- [x] Implement and test the ring-buffer component.
+- [x] Add individual-write versus batch-write benchmark scripts.
+- [x] Record an initial throughput and memory baseline.
+- [ ] Re-run benchmarks on the review machine and record hardware, Python version, workload, and configuration.
+- [ ] Confirm and demonstrate producer-consumer correctness, full/empty behavior, wraparound, FIFO order, and cleanup.
+- [ ] Verify whether the ring buffer is integrated into the end-to-end simulator pipeline; document the actual path accurately.
+- [ ] Capture reproducible benchmark output for the review.
+
+### Milestone C — Prepare the review demonstration
+
+- [ ] Add a clear architecture diagram showing the implemented data path and the separately tested IPC component.
+- [ ] Prepare a short demo: submit matching orders, show a trade, run and stop the simulator, and explain the spread.
+- [ ] Present automated test results and benchmark methodology.
+- [ ] Document team contributions and merged changes based on verified repository history.
+- [ ] Run the complete test suite and benchmark scripts from a clean checkout of the agreed integration branch.
+- [ ] Confirm the review's required deliverables and presentation format with the project coordinator.
+
+---
+
+## Team Workflow
+
+The team uses individual branches and `teamlead` as the integration branch.
 
 1. Fetch the latest changes before starting work.
-2. Work on your assigned branch or agreed workstream.
-3. Commit related changes with clear messages.
-4. Push your branch to GitHub.
-5. Open a pull request targeting `teamlead`.
-6. Review the changes and run the tests before merging.
-7. Keep `main` aligned with the project's review and submission requirements.
-
-Before changing a shared method, data model, or binary format, discuss the change with the team and update [`docs/INTERFACES.md`](docs/INTERFACES.md).
-
-Do not force-push over teammates' work or claim that a pull request is tested without running the relevant tests.
-
----
-
-## Current Project Status
-
-The project has an initial Python package structure, shared models, an order book implementation, test files, and an interface contract. The current foundation has previously passed 12 tests in the local environment.
-
-The following work still requires implementation and/or verification before it can be described as complete:
-
-- Full matching-engine behavior and integration tests.
-- Memory-mapped ring buffer.
-- Asynchronous market simulator and throughput benchmark.
-- Two-process, one-million-order IPC demonstration.
-- Cython matching engine and terminal dashboard.
-- Asynchronous trade persistence.
-- Final end-to-end performance measurements.
-
-Test counts and status should be updated after running the latest integrated test suite.
-
----
+2. Work on the agreed task and branch.
+3. Keep commits focused and descriptive.
+4. Open pull requests targeting `teamlead`.
+5. Review code and run relevant tests before merging.
+6. Avoid merging to `main` until the team agrees the integration is ready.
+7. Update `docs/INTERFACES.md` when changing shared models, APIs, or the binary record format.
 
 ## Documentation
 
 - [Shared Interface Contract](docs/INTERFACES.md)
-- [ChronosMatch GitHub Repository](https://github.com/nagasai507/ChronosMatch)
+- [GitHub Repository](https://github.com/nagasai507/ChronosMatch)
 
-## Project Goal
-
-Build a correct, testable trading-engine simulation first, then optimize it and demonstrate its behavior with measured evidence.
-
-**Correctness first. Measured performance second.**
+**Project principle:** correctness first, measured performance second, and optimization supported by reproducible evidence.
