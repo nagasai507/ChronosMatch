@@ -22,3 +22,6 @@ Thumbs.db
 
 # Benchmark output
 benchmark-results/
+
+# Node.js dependencies
+frontend/node_modules/
