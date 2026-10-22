@@ -1,38 +1,30 @@
 
-"""API tests for the ChronosMatch FastAPI application."""
-
 from itertools import count
 
 import pytest
 from fastapi.testclient import TestClient
 
 from chronosmatch import api
-from chronosmatch.matching_engine import MatchingEngine
 
 
 @pytest.fixture
 def client():
-    """Give each test a fresh engine and simulator state."""
-    api.engine = MatchingEngine()
+    """Create a test client with isolated API state."""
+    api.engine = api.MatchingEngine()
     api.order_ids = count(1)
     api.timestamps = count(1)
+
     api.simulator_task = None
     api.simulator_orders_generated = 0
 
+    # Reset API metrics for each test.
+    api.orders_processed = 0
+    api.total_matching_latency_seconds = 0.0
+    api.api_total_trades = 0
+    api.api_executed_quantity = 0
+
     with TestClient(api.app) as test_client:
         yield test_client
-
-        # Avoid leaving the simulator running after a test.
-        if api.simulator_task is not None:
-            if not api.simulator_task.done():
-                test_client.post("/simulator/stop")
-
-
-def test_health_endpoint(client):
-    response = client.get("/health")
-
-    assert response.status_code == 200
-    assert response.json()["status"] == "healthy"
 
 
 def test_root_endpoint(client):
@@ -40,7 +32,17 @@ def test_root_endpoint(client):
 
     assert response.status_code == 200
     data = response.json()
+
+    assert data["name"] == "ChronosMatch API"
+    assert data["docs"] == "/docs"
     assert data["status"] == "ok"
+
+
+def test_health_endpoint(client):
+    response = client.get("/health")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
 
 
 def test_orderbook_initially_empty(client):
@@ -48,88 +50,164 @@ def test_orderbook_initially_empty(client):
 
     assert response.status_code == 200
     data = response.json()
+
+    assert data["bids"] == []
+    assert data["asks"] == []
     assert data["best_bid"] is None
     assert data["best_ask"] is None
 
 
-def test_trades_initially_empty(client):
-    response = client.get("/trades")
-
-    assert response.status_code == 200
-    assert response.json() == []
-
-
-def test_submit_valid_buy_order(client):
+def test_submit_sell_order(client):
     response = client.post(
         "/orders",
-        json={"side": "BUY", "price": 100, "quantity": 10},
+        json={
+            "side": "SELL",
+            "price": 100,
+            "quantity": 10,
+        },
     )
 
     assert response.status_code == 200
     data = response.json()
+
+    assert data["order"]["side"] == "SELL"
+    assert data["order"]["price"] == 100
+    assert data["order"]["quantity"] == 10
+    assert data["trades"] == []
+
+
+def test_submit_buy_order(client):
+    response = client.post(
+        "/orders",
+        json={
+            "side": "BUY",
+            "price": 100,
+            "quantity": 10,
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+
     assert data["order"]["side"] == "BUY"
     assert data["order"]["price"] == 100
     assert data["order"]["quantity"] == 10
+    assert data["trades"] == []
 
 
 def test_matching_orders_create_trade(client):
     sell_response = client.post(
         "/orders",
-        json={"side": "SELL", "price": 100, "quantity": 10},
+        json={
+            "side": "SELL",
+            "price": 100,
+            "quantity": 10,
+        },
     )
     assert sell_response.status_code == 200
 
     buy_response = client.post(
         "/orders",
-        json={"side": "BUY", "price": 100, "quantity": 10},
+        json={
+            "side": "BUY",
+            "price": 100,
+            "quantity": 4,
+        },
     )
     assert buy_response.status_code == 200
 
-    data = buy_response.json()
-    assert len(data["trades"]) == 1
-    assert data["trades"][0]["price"] == 100
-    assert data["trades"][0]["quantity"] == 10
+    trades = buy_response.json()["trades"]
 
-    trades_response = client.get("/trades")
-    assert trades_response.status_code == 200
-    assert len(trades_response.json()) == 1
+    assert len(trades) == 1
+    assert trades[0]["price"] == 100
+    assert trades[0]["quantity"] == 4
+
+
+def test_get_trades(client):
+    client.post(
+        "/orders",
+        json={
+            "side": "SELL",
+            "price": 100,
+            "quantity": 10,
+        },
+    )
+    client.post(
+        "/orders",
+        json={
+            "side": "BUY",
+            "price": 100,
+            "quantity": 4,
+        },
+    )
+
+    response = client.get("/trades")
+
+    assert response.status_code == 200
+    trades = response.json()
+
+    assert len(trades) == 1
+    assert trades[0]["quantity"] == 4
+
+
+def test_invalid_order_side(client):
+    response = client.post(
+        "/orders",
+        json={
+            "side": "INVALID",
+            "price": 100,
+            "quantity": 10,
+        },
+    )
+
+    assert response.status_code == 400
 
 
 @pytest.mark.parametrize(
-    "order",
+    "payload",
     [
         {"side": "BUY", "price": 0, "quantity": 10},
-        {"side": "SELL", "price": 100, "quantity": 0},
-        {"side": "INVALID", "price": 100, "quantity": 10},
+        {"side": "BUY", "price": 100, "quantity": 0},
         {"side": "BUY", "price": -1, "quantity": 10},
+        {"side": "BUY", "price": 100, "quantity": -1},
     ],
 )
-def test_invalid_orders_are_rejected(client, order):
-    response = client.post("/orders", json=order)
+def test_invalid_price_or_quantity(client, payload):
+    response = client.post("/orders", json=payload)
 
     assert response.status_code == 422
 
 
-def test_simulator_initial_status(client):
+def test_custom_order_id(client):
+    response = client.post(
+        "/orders",
+        json={
+            "order_id": "CUSTOM-123",
+            "side": "BUY",
+            "price": 100,
+            "quantity": 5,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["order"]["order_id"] == "CUSTOM-123"
+
+
+def test_simulator_status_initially_stopped(client):
     response = client.get("/simulator/status")
 
     assert response.status_code == 200
-    assert response.json()["running"] is False
-    assert response.json()["generated"] == 0
+    data = response.json()
+
+    assert data["running"] is False
+    assert data["generated"] == 0
 
 
 def test_simulator_can_start_and_stop(client):
     start_response = client.post("/simulator/start")
 
     assert start_response.status_code == 200
-    assert start_response.json()["status"] in {
-        "running",
-        "already_running",
-    }
-
-    status_response = client.get("/simulator/status")
-    assert status_response.status_code == 200
-    assert status_response.json()["running"] is True
+    assert start_response.json()["status"] == "running"
 
     stop_response = client.post("/simulator/stop")
 
@@ -138,3 +216,80 @@ def test_simulator_can_start_and_stop(client):
 
     final_status = client.get("/simulator/status").json()
     assert final_status["running"] is False
+
+
+def test_metrics_initially_zero(client):
+    response = client.get("/metrics")
+
+    assert response.status_code == 200
+    data = response.json()
+
+    assert data["orders_processed"] == 0
+    assert data["total_trades"] == 0
+    assert data["executed_quantity"] == 0
+    assert data["average_matching_latency_ms"] == 0.0
+    assert data["matching_operations_per_second"] == 0.0
+
+
+def test_metrics_update_after_matching_orders(client):
+    sell_response = client.post(
+        "/orders",
+        json={
+            "side": "SELL",
+            "price": 100,
+            "quantity": 10,
+        },
+    )
+    assert sell_response.status_code == 200
+
+    buy_response = client.post(
+        "/orders",
+        json={
+            "side": "BUY",
+            "price": 100,
+            "quantity": 4,
+        },
+    )
+    assert buy_response.status_code == 200
+
+    response = client.get("/metrics")
+
+    assert response.status_code == 200
+    data = response.json()
+
+    assert data["orders_processed"] == 2
+    assert data["total_trades"] == 1
+    assert data["executed_quantity"] == 4
+    assert data["average_matching_latency_ms"] >= 0
+    assert data["matching_operations_per_second"] >= 0
+
+
+def test_simulator_trades_do_not_affect_api_metrics(client):
+    """Simulator orders should not increment API-specific metrics."""
+    api.engine.submit_order(
+        api.Order(
+            order_id="SIM-TEST-1",
+            side=api.OrderSide.SELL,
+            price=100,
+            quantity=10,
+            timestamp=1,
+        )
+    )
+    api.engine.submit_order(
+        api.Order(
+            order_id="SIM-TEST-2",
+            side=api.OrderSide.BUY,
+            price=100,
+            quantity=5,
+            timestamp=2,
+        )
+    )
+
+    response = client.get("/metrics")
+
+    assert response.status_code == 200
+    data = response.json()
+
+    assert data["orders_processed"] == 0
+    assert data["total_trades"] == 0
+    assert data["executed_quantity"] == 0

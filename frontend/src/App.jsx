@@ -24,13 +24,17 @@ function App() {
 
   const refresh = useCallback(async () => {
     try {
-      const [healthResponse, bookResponse, tradesResponse, statusResponse] =
-        await Promise.all([
-          fetch(`${API}/health`),
-          fetch(`${API}/orderbook`),
-          fetch(`${API}/trades`),
-          fetch(`${API}/simulator/status`),
-        ])
+      const [
+        healthResponse,
+        bookResponse,
+        tradesResponse,
+        statusResponse,
+      ] = await Promise.all([
+        fetch(`${API}/health`),
+        fetch(`${API}/orderbook`),
+        fetch(`${API}/trades`),
+        fetch(`${API}/simulator/status`),
+      ])
 
       if (
         !healthResponse.ok ||
@@ -49,11 +53,11 @@ function App() {
           statusResponse.json(),
         ])
 
-      setHealth(healthData.status === 'healthy' ? 'Connected' : 'Offline')
+      setHealth(healthData.status === 'ok' ? 'Connected' : 'Offline')
       setBook(bookData)
       setTrades(Array.isArray(tradesData) ? tradesData : [])
-      setSimRunning(statusData.running)
-      setSimGenerated(statusData.generated)
+      setSimRunning(Boolean(statusData.running))
+      setSimGenerated(Number(statusData.generated) || 0)
     } catch {
       setHealth('Offline')
     }
@@ -61,7 +65,6 @@ function App() {
 
   useEffect(() => {
     const interval = setInterval(refresh, 2000)
-
     return () => clearInterval(interval)
   }, [refresh])
 
@@ -73,9 +76,7 @@ function App() {
     try {
       const response = await fetch(`${API}/orders`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           side,
           price: Number(price),
@@ -134,19 +135,38 @@ function App() {
     }
   }
 
-  const bids = book.bids || []
-  const asks = book.asks || []
-  
-const spread =
-  book.best_bid != null && book.best_ask != null
-    ? book.best_ask - book.best_bid
+  const bids = Array.isArray(book.bids) ? book.bids : []
+  const asks = Array.isArray(book.asks) ? book.asks : []
+
+  // The API returns best_bid and best_ask as order objects.
+  const bestBid = Number.isFinite(Number(book.best_bid?.price))
+    && book.best_bid?.price != null
+    ? Number(book.best_bid.price)
     : null
 
+  const bestAsk = Number.isFinite(Number(book.best_ask?.price))
+    && book.best_ask?.price != null
+    ? Number(book.best_ask.price)
+    : null
+
+  const spread =
+    bestBid !== null && bestAsk !== null
+      ? bestAsk - bestBid
+      : null
 
   const activeOrders = bids.length + asks.length
 
-  const formatPrice = (value) =>
-    value == null ? '—' : Number(value).toLocaleString()
+  const formatPrice = (value) => {
+    if (
+      value == null ||
+      value === '' ||
+      !Number.isFinite(Number(value))
+    ) {
+      return '—'
+    }
+
+    return Number(value).toLocaleString()
+  }
 
   return (
     <main className="app">
@@ -204,10 +224,7 @@ const spread =
             <p className="eyebrow">AUTOMATED ORDER FLOW</p>
             <h2>Market Simulator</h2>
           </div>
-
-          <span
-            className={`tag ${simRunning ? 'tag-running' : ''}`}
-          >
+          <span className={`tag ${simRunning ? 'tag-running' : ''}`}>
             {simRunning ? 'RUNNING' : 'STOPPED'}
           </span>
         </div>
@@ -221,9 +238,7 @@ const spread =
           <button
             type="button"
             className="submit buy"
-            disabled={
-              simLoading || simRunning || health !== 'Connected'
-            }
+            disabled={simLoading || simRunning || health !== 'Connected'}
             onClick={() => controlSimulator('start')}
           >
             {simLoading && !simRunning
@@ -252,17 +267,13 @@ const spread =
       <section className="metrics">
         <article className="metric-card">
           <p>BEST BID</p>
-          <strong className="green">
-            {formatPrice(book.best_bid)}
-          </strong>
+          <strong className="green">{formatPrice(bestBid)}</strong>
           <span>Highest buy price</span>
         </article>
 
         <article className="metric-card">
           <p>BEST ASK</p>
-          <strong className="red">
-            {formatPrice(book.best_ask)}
-          </strong>
+          <strong className="red">{formatPrice(bestAsk)}</strong>
           <span>Lowest sell price</span>
         </article>
 
@@ -277,19 +288,16 @@ const spread =
           <strong>{trades.length}</strong>
           <span>Recorded trade executions</span>
         </article>
-        
-<article className="metric-card">
-  <p>BID–ASK SPREAD</p>
-  <strong>
-    {spread == null ? '—' : spread.toLocaleString()}
-  </strong>
-  <span>
-    {spread == null
-      ? 'Waiting for both sides'
-      : 'Price difference in ticks'}
-  </span>
-</article>
 
+        <article className="metric-card">
+          <p>BID–ASK SPREAD</p>
+          <strong>{formatPrice(spread)}</strong>
+          <span>
+            {spread === null
+              ? 'Waiting for both sides'
+              : 'Price difference in ticks'}
+          </span>
+        </article>
       </section>
 
       <section className="main-grid">
@@ -384,8 +392,7 @@ const spread =
                   >
                     <span>{formatPrice(order.price)}</span>
                     <span>
-                      {order.remaining_quantity ??
-                        order.quantity}
+                      {order.remaining_quantity ?? order.quantity}
                     </span>
                   </div>
                 ))
@@ -409,8 +416,7 @@ const spread =
                   >
                     <span>{formatPrice(order.price)}</span>
                     <span>
-                      {order.remaining_quantity ??
-                        order.quantity}
+                      {order.remaining_quantity ?? order.quantity}
                     </span>
                   </div>
                 ))
@@ -420,51 +426,51 @@ const spread =
         </div>
       </section>
 
-<section className="panel performance-panel">
-  <div className="panel-heading">
-    <div>
-      <p className="eyebrow">ENGINE BENCHMARKS</p>
-      <h2>Ring Buffer Performance</h2>
-    </div>
-    <span className="tag">RECORDED RESULTS</span>
-  </div>
+      <section className="panel performance-panel">
+        <div className="panel-heading">
+          <div>
+            <p className="eyebrow">ENGINE BENCHMARKS</p>
+            <h2>Ring Buffer Performance</h2>
+          </div>
+          <span className="tag">RECORDED RESULTS</span>
+        </div>
 
-  <p className="performance-note">
-    Previously measured throughput comparison. These values are
-    benchmark results, not live performance measurements.
-  </p>
+        <p className="performance-note">
+          Previously measured throughput comparison. These values are
+          benchmark results, not live performance measurements.
+        </p>
 
-  <div className="benchmark-row">
-    <div className="benchmark-label">
-      <span>Individual writes</span>
-      <strong>96,383 orders/sec</strong>
-    </div>
-    <div className="benchmark-track">
-      <div className="benchmark-bar individual-bar" />
-    </div>
-  </div>
+        <div className="benchmark-row">
+          <div className="benchmark-label">
+            <span>Individual writes</span>
+            <strong>96,383 orders/sec</strong>
+          </div>
+          <div className="benchmark-track">
+            <div className="benchmark-bar individual-bar" />
+          </div>
+        </div>
 
-  <div className="benchmark-row">
-    <div className="benchmark-label">
-      <span>Batch writes</span>
-      <strong>234,872 orders/sec</strong>
-    </div>
-    <div className="benchmark-track">
-      <div className="benchmark-bar batch-bar" />
-    </div>
-  </div>
+        <div className="benchmark-row">
+          <div className="benchmark-label">
+            <span>Batch writes</span>
+            <strong>234,872 orders/sec</strong>
+          </div>
+          <div className="benchmark-track">
+            <div className="benchmark-bar batch-bar" />
+          </div>
+        </div>
 
-  <div className="benchmark-summary">
-    <div>
-      <span>Batch speedup</span>
-      <strong>2.44×</strong>
-    </div>
-    <div>
-      <span>Throughput improvement</span>
-      <strong>+143.69%</strong>
-    </div>
-  </div>
-</section>
+        <div className="benchmark-summary">
+          <div>
+            <span>Batch speedup</span>
+            <strong>2.44×</strong>
+          </div>
+          <div>
+            <span>Throughput improvement</span>
+            <strong>+143.69%</strong>
+          </div>
+        </div>
+      </section>
 
       <section className="panel trades-panel">
         <div className="panel-heading">
