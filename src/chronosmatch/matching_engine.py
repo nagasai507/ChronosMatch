@@ -1,0 +1,113 @@
+
+"""Price-time-priority matching engine for ChronosMatch."""
+
+from .models import Order, OrderSide, Trade
+from .order_book import OrderBook
+
+
+class MatchingEngine:
+    """Match incoming orders against resting orders in the order book."""
+
+    def __init__(self, order_book: OrderBook | None = None) -> None:
+        self.order_book = (
+            order_book if order_book is not None else OrderBook()
+        )
+        self.trades: list[Trade] = []
+        self._next_trade_id = 1
+
+        # Track every order ID accepted by this engine.
+        self._seen_order_ids: set[str] = set()
+
+    def submit_order(self, order: Order) -> list[Trade]:
+        """Submit an order and return the trades created by this submission."""
+
+        if not isinstance(order, Order):
+            raise TypeError("order must be an Order instance")
+
+        if order.side not in (OrderSide.BUY, OrderSide.SELL):
+            raise ValueError(f"Unsupported order side: {order.side!r}")
+
+        if order.order_id in self._seen_order_ids:
+            raise ValueError(f"Duplicate order ID: {order.order_id}")
+
+        if order.remaining_quantity is None:
+            order.remaining_quantity = order.quantity
+
+        if order.remaining_quantity < 0:
+            raise ValueError("remaining_quantity cannot be negative")
+
+        if order.remaining_quantity > order.quantity:
+            raise ValueError(
+                "remaining_quantity cannot exceed the original quantity"
+            )
+
+        # A zero-quantity remainder does not enter the book or match.
+        # Reserve its ID so the same order cannot later be resubmitted.
+        self._seen_order_ids.add(order.order_id)
+
+        if order.remaining_quantity == 0:
+            return []
+
+        created_trades: list[Trade] = []
+
+        while order.remaining_quantity > 0:
+            if order.side == OrderSide.BUY:
+                resting_order = self.order_book.get_best_ask()
+
+                if (
+                    resting_order is None
+                    or order.price < resting_order.price
+                ):
+                    break
+
+                buy_order = order
+                sell_order = resting_order
+
+            else:
+                resting_order = self.order_book.get_best_bid()
+
+                if (
+                    resting_order is None
+                    or order.price > resting_order.price
+                ):
+                    break
+
+                buy_order = resting_order
+                sell_order = order
+
+            if resting_order.remaining_quantity is None:
+                resting_order.remaining_quantity = resting_order.quantity
+
+            if resting_order.remaining_quantity <= 0:
+                self.order_book.remove_order(resting_order.order_id)
+                continue
+
+            matched_quantity = min(
+                order.remaining_quantity,
+                resting_order.remaining_quantity,
+            )
+
+            trade = Trade(
+                trade_id=str(self._next_trade_id),
+                buy_order_id=buy_order.order_id,
+                sell_order_id=sell_order.order_id,
+                price=resting_order.price,
+                quantity=matched_quantity,
+                timestamp=order.timestamp,
+            )
+
+            self._next_trade_id += 1
+
+            order.remaining_quantity -= matched_quantity
+            resting_order.remaining_quantity -= matched_quantity
+
+            created_trades.append(trade)
+            self.trades.append(trade)
+
+            if resting_order.remaining_quantity == 0:
+                self.order_book.remove_order(resting_order.order_id)
+
+        if order.remaining_quantity > 0:
+            self.order_book.add_order(order)
+
+        return created_trades
