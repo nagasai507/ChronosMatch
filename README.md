@@ -10,16 +10,17 @@ ChronosMatch is an educational trading-engine prototype built to explore limit-o
 
 ## Current Status
 
-**Current verified milestone:** the local dashboard, FastAPI API, matching engine, order book, market simulator controls, and ring-buffer implementation are integrated in the development environment.
+**Current development milestone:** the local dashboard, FastAPI API, matching engine, order book, market simulator controls, and ring-buffer implementation are available in the development environment.
 
 - The frontend displays API connection status, best bid, best ask, active orders, executed trades, and bid–ask spread.
 - Users can submit manual BUY and SELL orders through the dashboard.
 - The simulator can be started and stopped through API endpoints.
 - The dashboard displays recent trades and the order book.
-- A ring-buffer benchmark section presents previously recorded throughput results; these are historical measurements, not live telemetry.
-- The latest recorded full test run completed with **122 passed, 0 failed** in approximately 2.09 seconds. It emitted one Starlette deprecation warning related to the TestClient/HTTPX integration.
+- The dashboard displays recorded ring-buffer benchmark comparisons separately from live market data.
+- The latest reported full test run completed with **131 passed, 0 failed**, with one Starlette deprecation warning related to the TestClient/HTTPX integration.
+- The latest reported local benchmarks include market-simulator throughput, individual and batched ring-buffer writes, and traced Python memory usage.
 
-Status is based on work verified locally during development. Re-run the commands in this README before a formal review or release.
+These are reported local results and must be reproduced on the exact commit intended for the final review. Performance measurements are not guarantees for other machines or environments.
 
 ---
 
@@ -53,7 +54,7 @@ Status is based on work verified locally during development. Re-run the commands
 
 ### Automated tests
 
-The current test suite covers models, order book, matching engine, integration, ring buffer, market simulator, firehose, multiprocess behavior, and API endpoints.
+The test suite covers models, order book, matching engine, integration, ring buffer, market simulator, firehose, multiprocess behavior, and API endpoints.
 
 ---
 
@@ -100,7 +101,7 @@ Some earlier project proposals mentioned Cython, `mmap`, `curses`, SQLite, and C
         (separately tested IPC and benchmark component)
 ```
 
-The web simulator currently submits generated orders to the matching engine. The ring buffer is implemented and tested as an IPC component, with separate benchmark scripts. Do not assume the web simulator is routed through a ring-buffer consumer unless that integration is explicitly completed and verified.
+The web simulator currently submits generated orders directly to the matching engine. The ring buffer is implemented and tested as an IPC component, with separate benchmark scripts. The web simulator must not be assumed to use a ring-buffer consumer unless that integration is explicitly completed and verified.
 
 ---
 
@@ -143,7 +144,7 @@ ChronosMatch/
 └── README.md
 ```
 
-This tree reflects the expected current layout. Confirm names against the checked-out branch if files have changed.
+This tree reflects the expected project layout. Confirm names against the checked-out branch if files have changed.
 
 ---
 
@@ -198,7 +199,7 @@ $env:PYTHONPATH = "src"
 python -m pytest tests/test_api.py -v
 ```
 
-The latest recorded full-suite result is **122 passed**. Re-run the tests after any changes; do not treat a past result as a guarantee about a different commit or environment.
+The latest reported full-suite result is **131 passed, 0 failed, with one warning**. This result must be reproduced on the exact commit intended for the final review.
 
 ---
 
@@ -279,30 +280,79 @@ The dashboard's benchmark section contains recorded results and is not a live pe
 
 ### Test suite
 
-The latest recorded test run:
+Latest reported full-suite result:
 
 ```text
-122 passed, 0 failed
+131 passed, 0 failed
+1 Starlette deprecation warning
 ```
 
-A Starlette deprecation warning was also reported for the current TestClient/HTTPX integration. It did not fail the test suite and remains a cleanup item.
+The warning relates to the TestClient/HTTPX integration. It did not fail the reported test run and remains a cleanup item. Rerun the full suite after changes and before the final review.
 
-### Previously recorded ring-buffer throughput benchmark
+### Ring-buffer throughput benchmark
 
-| Mode                   |         Throughput |
-| ---------------------- | -----------------: |
-| Individual writes      |  96,383 orders/sec |
-| Batch writes           | 234,872 orders/sec |
-| Batch speedup          |              2.44× |
-| Throughput improvement |           +143.69% |
+Latest reported local multiprocess benchmark:
 
-These are previously recorded measurements. Performance depends on hardware, Python version, process scheduling, batch size, and workload. Re-run `tests/benchmark_ring_buffer_multiprocess.py` to refresh the measurements before presenting them as current results.
+| Metric                      |             Result |
+| --------------------------- | -----------------: |
+| Orders per run              |          1,000,000 |
+| Buffer capacity             |              1,024 |
+| Batch size                  |                 64 |
+| Individual-write throughput |  54,042 orders/sec |
+| Batch-write throughput      | 142,554 orders/sec |
+| Batch speedup               |              2.64× |
+| Throughput improvement      |           +163.78% |
 
-### Memory benchmark
+Both individual and batch modes reported FIFO ordering, record integrity, and multiprocess execution as passed.
 
-A previous traced-memory run for 100,000 orders reported a peak of approximately 1,199.9 KiB for the optimized path. Treat this as a historical measurement and rerun `tests/benchmark_ring_buffer_memory.py` before using it in a formal report.
+The measured batch-mode throughput was approximately 2.64 times the individual-write throughput in this run. Repeat the benchmark to assess run-to-run variability.
+
+### Market simulator benchmark
+
+Latest reported local result:
+
+| Metric                                              |               Result |
+| --------------------------------------------------- | -------------------: |
+| Orders generated                                    |              100,000 |
+| Simulator generation elapsed time                   |     1.531281 seconds |
+| Simulator generation throughput                     | 65,304.80 orders/sec |
+| Successful ring-buffer writes                       |              100,000 |
+| Buffer-full rejections                              |                    0 |
+| Simulator + ring-buffer elapsed time                |     1.249324 seconds |
+| Simulator + ring-buffer successful-write throughput | 80,043.29 writes/sec |
+
+These measurements describe the benchmark scripts and do not establish that the web simulator uses the ring buffer in its end-to-end pipeline.
+
+### Traced-memory benchmark
+
+Latest reported local result:
+
+| Metric                       |      Result |
+| ---------------------------- | ----------: |
+| Orders supplied              |     100,000 |
+| Buffer capacity              |          10 |
+| Orders written               |          10 |
+| Current traced Python memory |    40.4 KiB |
+| Peak traced Python memory    | 1,199.8 KiB |
+
+The benchmark writes only 10 orders because the configured buffer capacity is 10. The reported values come from Python's `tracemalloc`; they do not represent total process RAM or the complete operating-system shared-memory allocation.
+
+### Reproducing the benchmarks
+
+Run these commands from the repository root with the Python virtual environment activated:
+
+```powershell
+$env:PYTHONPATH = "src"
+python .\tests\benchmark_market_simulator.py
+python .\tests\benchmark_ring_buffer_memory.py
+python .\tests\benchmark_ring_buffer_multiprocess.py
+```
+
+Record the hardware, Python version, buffer capacity, batch size, workload, elapsed time, and throughput when preparing formal performance results.
 
 Benchmark scripts are separate from the normal unit-test suite. Run them explicitly when collecting performance data.
+
+All figures above are reported local measurements, not universal performance guarantees. Results depend on hardware, Python version, process scheduling, configuration, and workload.
 
 ---
 
@@ -310,16 +360,17 @@ Benchmark scripts are separate from the normal unit-test suite. Run them explici
 
 - The dashboard uses local in-memory state; restarting the API resets its current order book, trades, and simulator counters.
 - The web simulator currently feeds orders directly into the matching engine; ring-buffer IPC is tested separately.
-- Benchmark figures shown in the dashboard are historical measurements, not live telemetry.
+- Benchmark figures shown in the dashboard are recorded measurements, not live telemetry.
 - API TestClient emits a Starlette deprecation warning that should be reviewed when updating compatible dependencies.
-- Persistent trade storage, database integration, and a production deployment are not currently documented as implemented features.
-- This project is a local educational simulation, not a production HFT system.
+- Persistent trade storage, database integration, and a production deployment are not documented as implemented features.
+- The dashboard's first-load behavior requires verification if stale or unrelated frontend content appears before a refresh.
+- This project is a local educational simulation, not a production high-frequency trading system.
 
 ---
 
-## Plan Until Mid-Project Review
+## Plan Until Final Review — 7 November 2026
 
-The target is a demonstrable, tested prototype with an explainable architecture and repeatable evidence. The following items are planned next; they are not all complete.
+The target is a demonstrable, tested prototype with an explainable architecture and repeatable evidence. Checklist items below indicate work status and remaining verification.
 
 ### Milestone A — Stabilize the integrated prototype
 
@@ -327,28 +378,31 @@ The target is a demonstrable, tested prototype with an explainable architecture 
 - [x] Submit manual orders and view the order book and trades.
 - [x] Add simulator start, stop, and status controls.
 - [x] Display best bid, best ask, and bid–ask spread.
-- [x] Add API tests and run the full test suite (latest recorded result: 122 passed).
+- [x] Add API tests and run the full test suite; latest reported result: 131 passed, 0 failed.
 - [ ] Review API simulator lifecycle and edge cases.
 - [ ] Resolve or document the TestClient deprecation warning.
-- [ ] Re-run all tests on the exact integration branch intended for review.
+- [ ] Re-run all tests on the exact integration commit intended for review.
+- [ ] Investigate and verify the dashboard's first-load behavior.
 
 ### Milestone B — Validate IPC and performance
 
 - [x] Implement and test the ring-buffer component.
 - [x] Add individual-write versus batch-write benchmark scripts.
-- [x] Record an initial throughput and memory baseline.
-- [ ] Re-run benchmarks on the review machine and record hardware, Python version, workload, and configuration.
+- [x] Run the market-simulator, ring-buffer memory, and multiprocess benchmarks.
+- [x] Record local throughput and traced-memory measurements.
+- [ ] Record hardware, Python version, workload, and configuration for the final benchmark report.
 - [ ] Confirm and demonstrate producer-consumer correctness, full/empty behavior, wraparound, FIFO order, and cleanup.
 - [ ] Verify whether the ring buffer is integrated into the end-to-end simulator pipeline; document the actual path accurately.
-- [ ] Capture reproducible benchmark output for the review.
+- [ ] Repeat the benchmarks and capture reproducible output for the review.
 
-### Milestone C — Prepare the review demonstration
+### Milestone C — Prepare the final review demonstration
 
 - [ ] Add a clear architecture diagram showing the implemented data path and the separately tested IPC component.
 - [ ] Prepare a short demo: submit matching orders, show a trade, run and stop the simulator, and explain the spread.
 - [ ] Present automated test results and benchmark methodology.
 - [ ] Document team contributions and merged changes based on verified repository history.
 - [ ] Run the complete test suite and benchmark scripts from a clean checkout of the agreed integration branch.
+- [ ] Verify Git status, branch history, commits, and pull-request status.
 - [ ] Confirm the review's required deliverables and presentation format with the project coordinator.
 
 ---
@@ -364,6 +418,7 @@ The team uses individual branches and `teamlead` as the integration branch.
 5. Review code and run relevant tests before merging.
 6. Avoid merging to `main` until the team agrees the integration is ready.
 7. Update `docs/INTERFACES.md` when changing shared models, APIs, or the binary record format.
+8. Verify the final integration branch and test results before presenting the project.
 
 ## Documentation
 
