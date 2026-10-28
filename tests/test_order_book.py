@@ -51,6 +51,18 @@ def test_remove_order():
     assert book.remove_order("unknown") is False
 
 
+def test_remove_best_order_reveals_next_best_order():
+    book = OrderBook()
+    book.add_order(make_order("b1", OrderSide.BUY, 100, 1))
+    book.add_order(make_order("b2", OrderSide.BUY, 105, 2))
+
+    assert book.get_best_bid().order_id == "b2"
+
+    assert book.remove_order("b2") is True
+
+    assert book.get_best_bid().order_id == "b1"
+
+
 def test_buy_fifo_uses_timestamp_at_same_price():
     book = OrderBook()
     book.add_order(make_order("b2", OrderSide.BUY, 100, 2))
