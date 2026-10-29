@@ -18,6 +18,16 @@ def test_empty_book():
     assert book.get_best_ask() is None
 
 
+def test_zero_remaining_quantity_order_is_not_added():
+    book = OrderBook()
+    order = make_order("b1", OrderSide.BUY, 100, 1)
+    order.remaining_quantity = 0
+
+    book.add_order(order)
+
+    assert book.get_best_bid() is None
+
+
 def test_best_bid_is_highest_price():
     book = OrderBook()
     book.add_order(make_order("b1", OrderSide.BUY, 100, 1))
