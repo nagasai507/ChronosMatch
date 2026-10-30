@@ -158,7 +158,19 @@ def submit_order(request: OrderRequest):
     global api_total_trades
     global api_executed_quantity
 
-    order_id = request.order_id or f"WEB-{next(order_ids)}"
+    # Reject explicitly supplied empty or whitespace-only IDs.
+    if request.order_id is not None and not request.order_id.strip():
+        raise HTTPException(
+            status_code=400,
+            detail="order_id must not be empty",
+        )
+
+    # Generate an ID only when the client does not provide one.
+    order_id = (
+        request.order_id
+        if request.order_id is not None
+        else f"WEB-{next(order_ids)}"
+    )
 
     try:
         order = Order(
@@ -192,6 +204,7 @@ def submit_order(request: OrderRequest):
         "trades": [trade_to_dict(trade) for trade in trades],
         "orderbook": get_orderbook(),
     }
+
 
 
 async def _run_simulator():

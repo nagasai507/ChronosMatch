@@ -293,3 +293,63 @@ def test_simulator_trades_do_not_affect_api_metrics(client):
     assert data["orders_processed"] == 0
     assert data["total_trades"] == 0
     assert data["executed_quantity"] == 0
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"side": "BUY", "price": 100},
+        {"side": "BUY", "quantity": 5},
+        {"price": 100, "quantity": 5},
+    ],
+)
+def test_missing_required_order_fields(client, payload):
+    response = client.post("/orders", json=payload)
+
+    assert response.status_code == 422
+
+
+def test_malformed_order_json(client):
+    response = client.post(
+        "/orders",
+        content="{invalid json",
+        headers={"Content-Type": "application/json"},
+    )
+
+    assert response.status_code == 422
+
+
+@pytest.mark.parametrize("order_id", ["", "   "])
+def test_blank_custom_order_id(client, order_id):
+    response = client.post(
+        "/orders",
+        json={
+            "order_id": order_id,
+            "side": "BUY",
+            "price": 100,
+            "quantity": 5,
+        },
+    )
+
+    assert response.status_code == 400
+
+
+def test_repeated_simulator_start_and_stop(client):
+    first_start = client.post("/simulator/start")
+    second_start = client.post("/simulator/start")
+
+    assert first_start.status_code == 200
+    assert second_start.status_code == 200
+    assert second_start.json()["status"] in (
+        "running",
+        "already_running",
+    )
+
+    first_stop = client.post("/simulator/stop")
+    second_stop = client.post("/simulator/stop")
+
+    assert first_stop.status_code == 200
+    assert second_stop.status_code == 200
+    assert second_stop.json()["status"] == "stopped"
+
+    assert client.get("/simulator/status").json()["running"] is False
