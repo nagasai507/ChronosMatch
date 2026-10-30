@@ -97,3 +97,19 @@ def test_sell_fifo_uses_timestamp_at_same_price():
     book.add_order(make_order("s1", OrderSide.SELL, 100, 1))
 
     assert book.get_best_ask().order_id == "s1"
+
+
+def test_buy_fifo_when_price_and_timestamp_are_equal():
+    book = OrderBook()
+    book.add_order(make_order("b1", OrderSide.BUY, 100, 1))
+    book.add_order(make_order("b2", OrderSide.BUY, 100, 1))
+
+    assert book.get_best_bid().order_id == "b1"
+
+
+def test_sell_fifo_when_price_and_timestamp_are_equal():
+    book = OrderBook()
+    book.add_order(make_order("s1", OrderSide.SELL, 100, 1))
+    book.add_order(make_order("s2", OrderSide.SELL, 100, 1))
+
+    assert book.get_best_ask().order_id == "s1"
