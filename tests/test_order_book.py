@@ -61,15 +61,25 @@ def test_remove_order():
     assert book.remove_order("unknown") is False
 
 
+def test_remove_sell_order():
+    book = OrderBook()
+    book.add_order(make_order("s1", OrderSide.SELL, 110, 1))
+    book.add_order(make_order("s2", OrderSide.SELL, 115, 2))
+
+    assert book.get_best_ask().order_id == "s1"
+
+    assert book.remove_order("s1") is True
+
+    assert book.get_best_ask().order_id == "s2"
+
+
 def test_remove_best_order_reveals_next_best_order():
     book = OrderBook()
     book.add_order(make_order("b1", OrderSide.BUY, 100, 1))
     book.add_order(make_order("b2", OrderSide.BUY, 105, 2))
 
     assert book.get_best_bid().order_id == "b2"
-
     assert book.remove_order("b2") is True
-
     assert book.get_best_bid().order_id == "b1"
 
 
@@ -85,5 +95,21 @@ def test_sell_fifo_uses_timestamp_at_same_price():
     book = OrderBook()
     book.add_order(make_order("s2", OrderSide.SELL, 100, 2))
     book.add_order(make_order("s1", OrderSide.SELL, 100, 1))
+
+    assert book.get_best_ask().order_id == "s1"
+
+
+def test_buy_fifo_when_price_and_timestamp_are_equal():
+    book = OrderBook()
+    book.add_order(make_order("b1", OrderSide.BUY, 100, 1))
+    book.add_order(make_order("b2", OrderSide.BUY, 100, 1))
+
+    assert book.get_best_bid().order_id == "b1"
+
+
+def test_sell_fifo_when_price_and_timestamp_are_equal():
+    book = OrderBook()
+    book.add_order(make_order("s1", OrderSide.SELL, 100, 1))
+    book.add_order(make_order("s2", OrderSide.SELL, 100, 1))
 
     assert book.get_best_ask().order_id == "s1"
