@@ -163,3 +163,61 @@ def test_ring_buffer_orders_produce_a_real_trade():
     finally:
         buffer.close()
         buffer.unlink()
+
+def test_simulator_firehose_ring_buffer_produces_real_trade():
+    async def run_test():
+        buffer = RingBuffer(capacity=10)
+
+        try:
+            stats = await write_orders_to_buffer(
+                MarketSimulator(seed=42),
+                buffer,
+                count=4,
+            )
+
+            assert stats.generated == 4
+            assert stats.successful_writes == 4
+            assert stats.buffer_full == 0
+
+            binary_orders = buffer.read_many(10)
+            assert len(binary_orders) == 4
+
+            engine = MatchingEngine()
+            generated_trades = []
+
+            for binary_order in binary_orders:
+                order = Order(
+                    order_id=f"SIM-{binary_order.order_id}",
+                    side=(
+                        OrderSide.BUY
+                        if binary_order.side == 0
+                        else OrderSide.SELL
+                    ),
+                    price=binary_order.price,
+                    quantity=binary_order.quantity,
+                    timestamp=binary_order.timestamp_ns,
+                )
+
+                generated_trades.extend(engine.submit_order(order))
+
+            assert len(generated_trades) == 1
+
+            trade = generated_trades[0]
+
+            assert trade.buy_order_id == "SIM-4"
+            assert trade.sell_order_id == "SIM-2"
+            assert trade.price == 98
+            assert trade.quantity == 29
+
+            best_bid = engine.order_book.get_best_bid()
+            assert best_bid is not None
+            assert best_bid.order_id == "SIM-4"
+            assert best_bid.remaining_quantity == 26
+
+            assert engine.order_book.get_best_ask() is None
+
+        finally:
+            buffer.close()
+            buffer.unlink()
+
+    asyncio.run(run_test())
