@@ -307,3 +307,46 @@ def test_partial_fill_across_price_levels_preserves_total_quantity():
     assert remaining_ask is next_ask
     assert remaining_ask.remaining_quantity == 1
     assert engine.order_book.get_best_bid() is None
+
+
+def test_trade_response_validates_execution_and_order_book_updates():
+    """Validate trade response fields and order-book state after execution."""
+    engine = MatchingEngine()
+
+    # Add two resting SELL orders at different price levels.
+    engine.submit_order(make_order("S1", OrderSide.SELL, 100, 2, 1))
+    engine.submit_order(make_order("S2", OrderSide.SELL, 101, 3, 2))
+
+    # Submit a BUY order that partially fills the second SELL order.
+    trades = engine.submit_order(
+        make_order("B1", OrderSide.BUY, 101, 4, 3)
+    )
+
+    # Verify the number of executions.
+    assert len(trades) == 2
+
+    # Validate every trade response.
+    assert all(trade.trade_id for trade in trades)
+    assert len({trade.trade_id for trade in trades}) == 2
+
+    assert [
+        (trade.buy_order_id, trade.sell_order_id,
+         trade.price, trade.quantity)
+        for trade in trades
+    ] == [
+        ("B1", "S1", 100, 2),
+        ("B1", "S2", 101, 2),
+    ]
+
+    # Verify executed quantity and trade history.
+    assert sum(trade.quantity for trade in trades) == 4
+    assert engine.trades[-2:] == trades
+
+    # Verify the remaining SELL order in the order book.
+    best_ask = engine.order_book.get_best_ask()
+    assert best_ask is not None
+    assert best_ask.order_id == "S2"
+    assert best_ask.remaining_quantity == 1
+
+    # No BUY quantity should remain.
+    assert engine.order_book.get_best_bid() is None
