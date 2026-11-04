@@ -44,7 +44,40 @@ async function apiRequest(url, options = {}) {
 
   return data
 }
+// Aggregate orders into price levels.
+function aggregateOrderLevels(orders, side) {
+  const levels = new Map()
 
+  orders.forEach((order) => {
+    const price = Number(order.price)
+
+    const quantity = Number(
+      order.remaining_quantity ?? order.quantity ?? 0
+    )
+
+    if (!Number.isFinite(price) || quantity <= 0) return
+
+    const existing = levels.get(price) || {
+      price,
+      quantity: 0,
+      orderCount: 0,
+    }
+
+    existing.quantity += quantity
+    existing.orderCount += 1
+
+    levels.set(price, existing)
+  })
+
+  const sortedLevels = [...levels.values()].sort(
+    (a, b) =>
+      side === 'ASK'
+        ? a.price - b.price
+        : b.price - a.price
+  )
+
+  return sortedLevels.slice(0, 12)
+}
 function App() {
   const [health, setHealth] = useState('Checking...')
 
@@ -119,7 +152,13 @@ function App() {
           Array.isArray(data?.bids) &&
           Array.isArray(data?.asks)
         ) {
-          setBook(data)
+          // Keep raw orders in state; aggregate once for the depth display.
+          setBook({
+            bids: data.bids,
+            asks: data.asks,
+            best_bid: data.best_bid,
+            best_ask: data.best_ask,
+          })
         } else {
           failedEndpoints.push('order book')
         }
@@ -253,6 +292,21 @@ function App() {
   // Safely read order book data.
   const bids = Array.isArray(book.bids) ? book.bids : []
   const asks = Array.isArray(book.asks) ? book.asks : []
+
+  // Aggregate and sort market depth.
+  const bidLevels = aggregateOrderLevels(bids, 'BID')
+  const askLevels = aggregateOrderLevels(asks, 'ASK')
+
+  // Maximum quantities are used to scale depth bars.
+  const maxBidQuantity = Math.max(
+    ...bidLevels.map((level) => level.quantity),
+    1
+  )
+
+  const maxAskQuantity = Math.max(
+    ...askLevels.map((level) => level.quantity),
+    1
+  )
 
   // The API returns best_bid and best_ask as order objects.
   const bestBid =
@@ -539,71 +593,97 @@ function App() {
               <p className="eyebrow">MARKET DEPTH</p>
               <h2>Order Book</h2>
             </div>
-
-            <span className="tag">LIVE</span>
+            <span className="tag">LIVE · TOP 12 LEVELS</span>
           </div>
 
-          <div className="book-columns">
-            {/* Asks */}
-            <div className="book-side">
-              <h3 className="red">ASKS / SELL</h3>
+          <div className="depth-summary">
+            <div className="depth-summary-item">
+              <span>BEST BID</span>
+              <strong className="green">{formatPrice(bestBid)}</strong>
+            </div>
+            <div className="depth-summary-spread">
+              <span>SPREAD</span>
+              <strong>{formatPrice(spread)}</strong>
+            </div>
+            <div className="depth-summary-item">
+              <span>BEST ASK</span>
+              <strong className="red">{formatPrice(bestAsk)}</strong>
+            </div>
+          </div>
 
-              <div className="table-header">
-                <span>Price</span>
-                <span>Remaining</span>
+          <div className="book-columns depth-columns">
+            {/* Asks: lowest sell price first */}
+            <div className="book-side">
+              <div className="depth-side-heading">
+                <h3 className="red">ASKS / SELL</h3>
+                <span>{askLevels.length} levels</span>
               </div>
 
-              {asks.length === 0 ? (
-                <p className="empty">
-                  No open sell orders
-                </p>
-              ) : (
-                [...asks].reverse().map((order, index) => (
-                  <div
-                    className="book-row ask-row"
-                    key={order.order_id || `ask-${index}`}
-                  >
-                    <span>{formatPrice(order.price)}</span>
+              <div className="depth-table-header">
+                <span>PRICE</span>
+                <span>ORDERS</span>
+                <span>TOTAL QTY</span>
+              </div>
 
-                    <span>
-                      {order.remaining_quantity ??
-                        order.quantity}
-                    </span>
+              {askLevels.length === 0 ? (
+                <p className="empty">No open sell orders</p>
+              ) : (
+                askLevels.map((level) => (
+                  <div className="depth-row ask-depth-row" key={`ask-${level.price}`}>
+                    <div className="depth-bar-track">
+                      <div
+                        className="depth-fill ask-depth-fill"
+                        style={{
+                          width: `${Math.max(4, (level.quantity / maxAskQuantity) * 100)}%`,
+                        }}
+                      />
+                    </div>
+                    <strong className="red">{formatPrice(level.price)}</strong>
+                    <span>{level.orderCount}</span>
+                    <strong>{level.quantity.toLocaleString()}</strong>
                   </div>
                 ))
               )}
             </div>
 
-            {/* Bids */}
+            {/* Bids: highest buy price first */}
             <div className="book-side">
-              <h3 className="green">BIDS / BUY</h3>
-
-              <div className="table-header">
-                <span>Price</span>
-                <span>Remaining</span>
+              <div className="depth-side-heading">
+                <h3 className="green">BIDS / BUY</h3>
+                <span>{bidLevels.length} levels</span>
               </div>
 
-              {bids.length === 0 ? (
-                <p className="empty">
-                  No open buy orders
-                </p>
-              ) : (
-                bids.map((order, index) => (
-                  <div
-                    className="book-row bid-row"
-                    key={order.order_id || `bid-${index}`}
-                  >
-                    <span>{formatPrice(order.price)}</span>
+              <div className="depth-table-header">
+                <span>PRICE</span>
+                <span>ORDERS</span>
+                <span>TOTAL QTY</span>
+              </div>
 
-                    <span>
-                      {order.remaining_quantity ??
-                        order.quantity}
-                    </span>
+              {bidLevels.length === 0 ? (
+                <p className="empty">No open buy orders</p>
+              ) : (
+                bidLevels.map((level) => (
+                  <div className="depth-row bid-depth-row" key={`bid-${level.price}`}>
+                    <div className="depth-bar-track">
+                      <div
+                        className="depth-fill bid-depth-fill"
+                        style={{
+                          width: `${Math.max(4, (level.quantity / maxBidQuantity) * 100)}%`,
+                        }}
+                      />
+                    </div>
+                    <strong className="green">{formatPrice(level.price)}</strong>
+                    <span>{level.orderCount}</span>
+                    <strong>{level.quantity.toLocaleString()}</strong>
                   </div>
                 ))
               )}
             </div>
           </div>
+
+          <p className="depth-caption">
+            Quantities are grouped by price. Bars show relative depth within each side of the book.
+          </p>
         </div>
       </section>
 
