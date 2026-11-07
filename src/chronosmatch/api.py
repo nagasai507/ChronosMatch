@@ -1,4 +1,3 @@
-
 """FastAPI endpoints for ChronosMatch API."""
 
 import asyncio
@@ -12,6 +11,8 @@ from pydantic import BaseModel, Field
 from .market_simulator import MarketSimulator
 from .matching_engine import MatchingEngine
 from .models import Order, OrderSide
+from .repositories import save_order, save_trades
+from .auth_routes import router as auth_router
 
 
 app = FastAPI(title="ChronosMatchAPI", version="0.1.0")
@@ -25,8 +26,11 @@ app.add_middleware(
         "http://127.0.0.1:5174",
     ],
     allow_methods=["GET", "POST"],
-    allow_headers=["Content-Type"],
+    allow_headers=["Content-Type", "Authorization"],
 )
+
+# Register authentication endpoints.
+app.include_router(auth_router)
 
 engine = MatchingEngine()
 order_ids = count(1)
@@ -70,6 +74,43 @@ def trade_to_dict(trade) -> dict:
         "quantity": trade.quantity,
         "timestamp": trade.timestamp,
     }
+
+
+def capture_resting_orders() -> dict[str, Order]:
+    """Capture existing orders before matching changes them."""
+
+    book = engine.order_book
+
+    return {
+        order.order_id: order
+        for order in list(book._bids) + list(book._asks)
+    }
+
+
+def persist_submission(
+    order: Order,
+    trades: list,
+    resting_orders_before: dict[str, Order],
+) -> None:
+    """Persist an incoming order, affected resting orders, and trades."""
+
+    save_order(order)
+
+    affected_order_ids = set()
+
+    for trade in trades:
+        affected_order_ids.add(trade.buy_order_id)
+        affected_order_ids.add(trade.sell_order_id)
+
+    affected_order_ids.discard(order.order_id)
+
+    for affected_id in affected_order_ids:
+        resting_order = resting_orders_before.get(affected_id)
+
+        if resting_order is not None:
+            save_order(resting_order)
+
+    save_trades(trades)
 
 
 @app.get("/")
@@ -158,14 +199,12 @@ def submit_order(request: OrderRequest):
     global api_total_trades
     global api_executed_quantity
 
-    # Reject explicitly supplied empty or whitespace-only IDs.
     if request.order_id is not None and not request.order_id.strip():
         raise HTTPException(
             status_code=400,
             detail="order_id must not be empty",
         )
 
-    # Generate an ID only when the client does not provide one.
     order_id = (
         request.order_id
         if request.order_id is not None
@@ -181,9 +220,17 @@ def submit_order(request: OrderRequest):
             timestamp=next(timestamps),
         )
 
+        resting_orders_before = capture_resting_orders()
+
         started_at = perf_counter()
         trades = engine.submit_order(order)
         elapsed = perf_counter() - started_at
+
+        persist_submission(
+            order,
+            trades,
+            resting_orders_before,
+        )
 
         orders_processed += 1
         total_matching_latency_seconds += elapsed
@@ -206,7 +253,6 @@ def submit_order(request: OrderRequest):
     }
 
 
-
 async def _run_simulator():
     global simulator_orders_generated
 
@@ -214,10 +260,18 @@ async def _run_simulator():
         count=None,
         yield_every=1,
     ):
-        engine.submit_order(order)
+        resting_orders_before = capture_resting_orders()
+
+        trades = engine.submit_order(order)
+
+        persist_submission(
+            order,
+            trades,
+            resting_orders_before,
+        )
+
         simulator_orders_generated += 1
 
-        # Keep the simulation readable and responsive.
         await asyncio.sleep(0.5)
 
 
