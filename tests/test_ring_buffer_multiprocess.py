@@ -2,7 +2,7 @@
 import multiprocessing as mp
 import time
 
-from src.chronosmatch.ring_buffer import (
+from chronosmatch.ring_buffer import (
     BinaryOrder,
     RECORD_SIZE,
     HEADER_SIZE,

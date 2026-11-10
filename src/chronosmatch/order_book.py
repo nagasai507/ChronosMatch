@@ -1,3 +1,4 @@
+
 """Order-book interface for live orders."""
 
 from .models import Order, OrderSide
@@ -11,20 +12,41 @@ class OrderBook:
         self._asks: list[Order] = []
 
     def add_order(self, order: Order) -> None:
-        """Add an order to the appropriate side."""
+        """Insert an order while preserving price-time priority."""
         if order.remaining_quantity <= 0:
             return
 
         if order.side == OrderSide.BUY:
-            self._bids.append(order)
-            self._bids.sort(
-                key=lambda o: (-o.price, o.timestamp)
-            )
+            orders = self._bids
+            key = (-order.price, order.timestamp)
+
         elif order.side == OrderSide.SELL:
-            self._asks.append(order)
-            self._asks.sort(
-                key=lambda o: (o.price, o.timestamp)
-            )
+            orders = self._asks
+            key = (order.price, order.timestamp)
+
+        else:
+            return
+
+        # Find the correct insertion position using binary search.
+        low = 0
+        high = len(orders)
+
+        while low < high:
+            mid = (low + high) // 2
+            current = orders[mid]
+
+            if order.side == OrderSide.BUY:
+                current_key = (-current.price, current.timestamp)
+            else:
+                current_key = (current.price, current.timestamp)
+
+            if current_key <= key:
+                low = mid + 1
+            else:
+                high = mid
+
+        # Insert without sorting the entire list.
+        orders.insert(low, order)
 
     def get_best_bid(self) -> Order | None:
         """Return the highest-priority live buy order."""
@@ -34,7 +56,7 @@ class OrderBook:
         return None
 
     def get_best_ask(self) -> Order | None:
-        """Return the highest-priority live sell order."""
+        """Return the lowest-priority live sell order."""
         for order in self._asks:
             if order.remaining_quantity > 0:
                 return order
