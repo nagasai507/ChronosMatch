@@ -353,3 +353,117 @@ def test_repeated_simulator_start_and_stop(client):
     assert second_stop.json()["status"] == "stopped"
 
     assert client.get("/simulator/status").json()["running"] is False
+
+def test_market_websocket_connection(client):
+    with client.websocket_connect("/ws/market") as websocket:
+        message = websocket.receive_json()
+
+        assert message["event"] == "market_snapshot"
+        assert "orderbook" in message["data"]
+        assert "trades" in message["data"]
+
+def test_websocket_receives_order_updates(client):
+    with client.websocket_connect("/ws/market") as websocket:
+        snapshot = websocket.receive_json()
+        assert snapshot["event"] == "market_snapshot"
+
+        response = client.post(
+            "/orders",
+            json={
+                "side": "BUY",
+                "price": 100,
+                "quantity": 10,
+            },
+        )
+
+        assert response.status_code == 200
+
+        order_event = websocket.receive_json()
+        book_event = websocket.receive_json()
+
+        assert order_event["event"] == "order_submitted"
+        assert order_event["data"]["side"] == "BUY"
+
+        assert book_event["event"] == "order_book_update"
+        assert len(book_event["data"]["bids"]) == 1
+
+def test_websocket_receives_trade_events(client):
+    with client.websocket_connect("/ws/market") as websocket:
+        snapshot = websocket.receive_json()
+        assert snapshot["event"] == "market_snapshot"
+
+        # Submit a resting SELL order.
+        sell_response = client.post(
+            "/orders",
+            json={
+                "side": "SELL",
+                "price": 100,
+                "quantity": 10,
+            },
+        )
+        assert sell_response.status_code == 200
+
+        # Consume the SELL order events.
+        assert websocket.receive_json()["event"] == "order_submitted"
+        assert websocket.receive_json()["event"] == "order_book_update"
+
+        # Submit a matching BUY order.
+        buy_response = client.post(
+            "/orders",
+            json={
+                "side": "BUY",
+                "price": 100,
+                "quantity": 4,
+            },
+        )
+        assert buy_response.status_code == 200
+
+        # Receive matching events.
+        assert websocket.receive_json()["event"] == "order_submitted"
+        assert websocket.receive_json()["event"] == "order_book_update"
+
+        trade_event = websocket.receive_json()
+
+        assert trade_event["event"] == "trade_executed"
+        assert len(trade_event["data"]) == 1
+        assert trade_event["data"][0]["price"] == 100
+        assert trade_event["data"][0]["quantity"] == 4
+
+
+def test_websocket_receives_simulator_status(client):
+    with client.websocket_connect("/ws/market") as websocket:
+        snapshot = websocket.receive_json()
+        assert snapshot["event"] == "market_snapshot"
+
+        start_response = client.post("/simulator/start")
+
+        assert start_response.status_code == 200
+        assert start_response.json()["status"] == "running"
+
+        status_event = websocket.receive_json()
+
+        assert status_event["event"] == "market_status"
+        assert status_event["data"]["status"] == "running"
+
+        stop_response = client.post("/simulator/stop")
+
+        assert stop_response.status_code == 200
+
+        # Simulator events may already be queued.
+        received_events = []
+
+        while True:
+            event = websocket.receive_json()
+            received_events.append(event)
+
+            if (
+                event["event"] == "market_status"
+                and event["data"]["status"] == "stopped"
+            ):
+                break
+
+        assert any(
+            event["event"] == "market_status"
+            and event["data"]["status"] == "stopped"
+            for event in received_events
+        )

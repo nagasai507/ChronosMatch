@@ -1,10 +1,17 @@
+
 """FastAPI endpoints for ChronosMatch API."""
 
 import asyncio
+from contextlib import asynccontextmanager
 from itertools import count
 from time import perf_counter
 
-from fastapi import FastAPI, HTTPException
+from fastapi import (
+    FastAPI,
+    HTTPException,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -13,9 +20,23 @@ from .matching_engine import MatchingEngine
 from .models import Order, OrderSide
 from .repositories import save_order, save_trades
 from .auth_routes import router as auth_router
+from .database import create_tables
+from .websocket_manager import ConnectionManager
 
 
-app = FastAPI(title="ChronosMatchAPI", version="0.1.0")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    create_tables()
+    yield
+
+
+app = FastAPI(
+    title="ChronosMatchAPI",
+    version="0.1.0",
+    lifespan=lifespan,
+)
+
+manager = ConnectionManager()
 
 app.add_middleware(
     CORSMiddleware,
@@ -113,6 +134,54 @@ def persist_submission(
     save_trades(trades)
 
 
+async def broadcast_market_update(
+    order: Order,
+    trades: list,
+) -> None:
+    """Broadcast order, order-book, and trade updates."""
+
+    await manager.broadcast({
+        "event": "order_submitted",
+        "data": order_to_dict(order),
+    })
+
+    await manager.broadcast({
+        "event": "order_book_update",
+        "data": get_orderbook(),
+    })
+
+    if trades:
+        await manager.broadcast({
+            "event": "trade_executed",
+            "data": [
+                trade_to_dict(trade)
+                for trade in trades
+            ],
+        })
+
+
+@app.websocket("/ws/market")
+async def market_websocket(websocket: WebSocket):
+    """Provide real-time market data to connected clients."""
+
+    await manager.connect(websocket)
+
+    try:
+        await websocket.send_json({
+            "event": "market_snapshot",
+            "data": {
+                "orderbook": get_orderbook(),
+                "trades": get_trades(),
+            },
+        })
+
+        while True:
+            await websocket.receive_text()
+
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
+
+
 @app.get("/")
 def root():
     return {
@@ -162,7 +231,10 @@ def get_orderbook():
 
 @app.get("/trades")
 def get_trades():
-    return [trade_to_dict(trade) for trade in engine.trades]
+    return [
+        trade_to_dict(trade)
+        for trade in engine.trades
+    ]
 
 
 @app.get("/metrics")
@@ -193,7 +265,7 @@ def get_metrics():
 
 
 @app.post("/orders")
-def submit_order(request: OrderRequest):
+async def submit_order(request: OrderRequest):
     global orders_processed
     global total_matching_latency_seconds
     global api_total_trades
@@ -246,9 +318,18 @@ def submit_order(request: OrderRequest):
             detail=str(exc),
         ) from exc
 
+    # Broadcast only after successful persistence.
+    await broadcast_market_update(order, trades)
+
+    order_data = order_to_dict(order)
+    trade_data = [
+        trade_to_dict(trade)
+        for trade in trades
+    ]
+
     return {
-        "order": order_to_dict(order),
-        "trades": [trade_to_dict(trade) for trade in trades],
+        "order": order_data,
+        "trades": trade_data,
         "orderbook": get_orderbook(),
     }
 
@@ -272,6 +353,8 @@ async def _run_simulator():
 
         simulator_orders_generated += 1
 
+        await broadcast_market_update(order, trades)
+
         await asyncio.sleep(0.5)
 
 
@@ -283,6 +366,12 @@ async def start_simulator():
         return {"status": "already_running"}
 
     simulator_task = asyncio.create_task(_run_simulator())
+
+    await manager.broadcast({
+        "event": "market_status",
+        "data": {"status": "running"},
+    })
+
     return {"status": "running"}
 
 
@@ -299,6 +388,12 @@ async def stop_simulator():
             pass
 
     simulator_task = None
+
+    await manager.broadcast({
+        "event": "market_status",
+        "data": {"status": "stopped"},
+    })
+
     return {"status": "stopped"}
 
 
