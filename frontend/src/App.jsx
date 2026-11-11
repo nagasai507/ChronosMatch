@@ -1,6 +1,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import './App.css'
+import Auth from './Auth'
 
 const API = 'http://127.0.0.1:8000'
 
@@ -35,8 +36,8 @@ async function apiRequest(url, options = {}) {
 
     const errorMessage = Array.isArray(detail)
       ? detail
-          .map((item) => item.msg || JSON.stringify(item))
-          .join(', ')
+        .map((item) => item.msg || JSON.stringify(item))
+        .join(', ')
       : detail || `API request failed (${response.status})`
 
     throw new Error(errorMessage)
@@ -80,6 +81,13 @@ function aggregateOrderLevels(orders, side) {
 }
 function App() {
   const [health, setHealth] = useState('Checking...')
+  const [wsStatus, setWsStatus] = useState('Connecting...')
+  const [authToken, setAuthToken] = useState(
+    () => sessionStorage.getItem('chronosmatch_token'),
+  )
+  const [authUser, setAuthUser] = useState(null)
+  const [showAuth, setShowAuth] = useState(false)
+  const [activePage, setActivePage] = useState('market')
 
   const [book, setBook] = useState({
     bids: [],
@@ -89,6 +97,9 @@ function App() {
   })
 
   const [trades, setTrades] = useState([])
+  const [myTrades, setMyTrades] = useState([])
+  const [tradeHistoryLoading, setTradeHistoryLoading] = useState(false)
+  const [tradeHistoryError, setTradeHistoryError] = useState('')
 
   const [side, setSide] = useState('BUY')
   const [price, setPrice] = useState('100')
@@ -104,6 +115,56 @@ function App() {
 
   // Prevent overlapping dashboard refresh requests.
   const refreshInFlight = useRef(false)
+  const wsRef = useRef(null)
+
+  // Restore the user session when the dashboard loads.
+  useEffect(() => {
+    if (!authToken) return
+
+    async function restoreSession() {
+      try {
+        const user = await apiRequest(`${API}/auth/me`, {
+          headers: {
+            Authorization: `Bearer ${authToken}`,
+          },
+        })
+
+        setAuthUser(user)
+      } catch {
+        sessionStorage.removeItem('chronosmatch_token')
+        setAuthToken(null)
+        setAuthUser(null)
+      }
+    }
+
+    restoreSession()
+  }, [authToken])
+
+  // Fetch trade history for the logged-in user.
+  useEffect(() => {
+    if (!authToken) return
+
+    async function fetchMyTrades() {
+      setTradeHistoryLoading(true)
+      setTradeHistoryError('')
+
+      try {
+        const data = await apiRequest(`${API}/my/trades`, {
+          headers: {
+            Authorization: `Bearer ${authToken}`,
+          },
+        })
+
+        setMyTrades(Array.isArray(data) ? data : [])
+      } catch (error) {
+        setTradeHistoryError(error.message)
+      } finally {
+        setTradeHistoryLoading(false)
+      }
+    }
+
+    fetchMyTrades()
+  }, [authToken])
 
   // Refresh dashboard endpoints independently.
   const refresh = useCallback(async () => {
@@ -206,6 +267,92 @@ function App() {
     return () => clearInterval(interval)
   }, [refresh])
 
+  // Connect to the real-time market WebSocket.
+  useEffect(() => {
+    let reconnectTimer
+    let shouldReconnect = true
+
+    function connectWebSocket() {
+      setWsStatus('Connecting...')
+
+      const socket = new WebSocket('ws://127.0.0.1:8000/ws/market')
+      wsRef.current = socket
+
+      socket.onopen = () => {
+        setWsStatus('Connected')
+      }
+
+      socket.onmessage = (message) => {
+        try {
+          const event = JSON.parse(message.data)
+          const data = event.data
+
+          switch (event.event) {
+            case 'market_snapshot':
+              setBook(data.orderbook)
+              setTrades(data.trades)
+              break
+
+            case 'order_submitted':
+              console.info('Order submitted:', data)
+              break
+
+            case 'order_book_update':
+              setBook(data)
+              break
+
+            case 'trade_executed':
+              setTrades((previousTrades) => {
+                const existingIds = new Set(
+                  previousTrades.map((trade) => trade.trade_id),
+                )
+
+                const newTrades = data.filter((trade) => {
+                  if (existingIds.has(trade.trade_id)) return false
+
+                  existingIds.add(trade.trade_id)
+                  return true
+                })
+
+                return [...previousTrades, ...newTrades]
+              })
+              break
+
+            case 'market_status':
+              setSimRunning(data.status === 'running')
+              break
+
+            default:
+              console.warn('Unknown WebSocket event:', event.event)
+          }
+        } catch (error) {
+          console.error('WebSocket message error:', error)
+        }
+      }
+
+      socket.onerror = () => {
+        socket.close()
+      }
+
+      socket.onclose = () => {
+        setWsStatus('Disconnected')
+
+        if (shouldReconnect) {
+          reconnectTimer = setTimeout(connectWebSocket, 3000)
+        }
+      }
+    }
+
+    connectWebSocket()
+
+    return () => {
+      shouldReconnect = false
+      clearTimeout(reconnectTimer)
+      wsRef.current?.close()
+      wsRef.current = null
+    }
+  }, [])
+
   // Submit a BUY or SELL order.
   async function submitOrder(event) {
     event.preventDefault()
@@ -237,6 +384,7 @@ function App() {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`,
         },
         body: JSON.stringify({
           side,
@@ -251,8 +399,21 @@ function App() {
           : 'Order accepted and added to the order book.',
       )
 
-      // Refresh the order book and trade history immediately.
+      // Refresh the market dashboard.
       await refresh()
+
+      // Refresh personal trade history.
+      try {
+        const updatedTrades = await apiRequest(`${API}/my/trades`, {
+          headers: {
+            Authorization: `Bearer ${authToken}`,
+          },
+        })
+
+        setMyTrades(Array.isArray(updatedTrades) ? updatedTrades : [])
+      } catch (error) {
+        setTradeHistoryError(error.message)
+      }
     } catch (error) {
       setMessage(error.message || 'Order submission failed.')
     } finally {
@@ -288,7 +449,34 @@ function App() {
       setSimLoading(false)
     }
   }
+  // Calculate portfolio values from personal trade history.
+  const portfolio = myTrades.reduce(
+    (summary, trade) => {
+      const quantity = Number(trade.quantity) || 0
+      const value = (Number(trade.price) || 0) * quantity
 
+      if (trade.side === 'BUY' || trade.side === 'BOTH') {
+        summary.buyQuantity += quantity
+        summary.buyValue += value
+      }
+
+      if (trade.side === 'SELL' || trade.side === 'BOTH') {
+        summary.sellQuantity += quantity
+        summary.sellValue += value
+      }
+
+      return summary
+    },
+    {
+      buyQuantity: 0,
+      sellQuantity: 0,
+      buyValue: 0,
+      sellValue: 0,
+    },
+  )
+
+  const netHoldings =
+    portfolio.buyQuantity - portfolio.sellQuantity
   // Safely read order book data.
   const bids = Array.isArray(book.bids) ? book.bids : []
   const asks = Array.isArray(book.asks) ? book.asks : []
@@ -311,13 +499,13 @@ function App() {
   // The API returns best_bid and best_ask as order objects.
   const bestBid =
     book.best_bid?.price != null &&
-    Number.isFinite(Number(book.best_bid.price))
+      Number.isFinite(Number(book.best_bid.price))
       ? Number(book.best_bid.price)
       : null
 
   const bestAsk =
     book.best_ask?.price != null &&
-    Number.isFinite(Number(book.best_ask.price))
+      Number.isFinite(Number(book.best_ask.price))
       ? Number(book.best_ask.price)
       : null
 
@@ -328,6 +516,24 @@ function App() {
 
   const activeOrders = bids.length + asks.length
 
+  function handleAuthenticated({ token, user }) {
+    sessionStorage.setItem('chronosmatch_token', token)
+    setAuthToken(token)
+    setAuthUser(user)
+    setShowAuth(false)
+    setMessage(`Welcome, ${user.username}!`)
+  }
+
+  function handleLogout() {
+    sessionStorage.removeItem('chronosmatch_token')
+    setAuthToken(null)
+    setAuthUser(null)
+    setMyTrades([])
+    setTradeHistoryError('')
+    setTradeHistoryLoading(false)
+    setActivePage('market')
+    setMessage('You have been logged out.')
+  }
   // Consistent price formatting.
   const formatPrice = (value) => {
     if (
@@ -335,7 +541,7 @@ function App() {
       value === '' ||
       !Number.isFinite(Number(value))
     ) {
-      return '—'
+      return 'â€”'
     }
 
     return Number(value).toLocaleString()
@@ -356,462 +562,633 @@ function App() {
 
         <div className="connection">
           <span
-            className={`status-dot ${
-              health === 'Connected' ? 'online' : 'offline'
-            }`}
+            className={`status-dot ${health === 'Connected' ? 'online' : 'offline'
+              }`}
           />
 
           <span>API {health}</span>
         </div>
+
+        <div className="connection">
+          <span
+            className={`status-dot ${wsStatus === 'Connected' ? 'online' : 'offline'
+              }`}
+          />
+
+          <span>WebSocket {wsStatus}</span>
+        </div>
+
+        <div className="auth-controls">
+          {authUser ? (
+            <>
+              <span className="auth-welcome">
+                Welcome, {authUser.username}
+              </span>
+              <button type="button" onClick={handleLogout}>
+                Log Out
+              </button>
+            </>
+          ) : (
+            <button type="button" onClick={() => setShowAuth(true)}>
+              Login / Register
+            </button>
+          )}
+        </div>
       </header>
 
-      {/* Hero */}
-      <section className="hero">
-        <div>
-          <p className="eyebrow">
-            TRADING ENGINE / LIVE CONSOLE
-          </p>
+      {/* Main Navigation */}
+      <nav className="page-navigation">
+        <button
+          type="button"
+          className={activePage === 'market' ? 'active' : ''}
+          onClick={() => setActivePage('market')}
+        >
+          Market
+        </button>
 
-          <h2>Market Operations</h2>
+        <button
+          type="button"
+          className={activePage === 'history' ? 'active' : ''}
+          onClick={() => setActivePage('history')}
+          disabled={!authToken}
+        >
+          Trade History
+        </button>
 
-          <p className="subtitle">
-            Monitor order flow, execute orders, and test the
-            matching engine in real time.
-          </p>
-        </div>
+        <button
+          type="button"
+          className={activePage === 'portfolio' ? 'active' : ''}
+          onClick={() => setActivePage('portfolio')}
+          disabled={!authToken}
+        >
+          Portfolio
+        </button>
+      </nav>
 
-        <div className="hero-status">
-          <span className="status-dot online" />
-          SIMULATION ENVIRONMENT
-        </div>
-      </section>
+      {showAuth && (
 
-      {/* User notifications */}
-      {message && (
-        <div className="notice" role="status">
-          <span>{message}</span>
 
-          <button
-            type="button"
-            className="dismiss"
-            onClick={() => setMessage('')}
-            aria-label="Dismiss message"
-          >
-            ×
-          </button>
-        </div>
+        <Auth
+          apiUrl={API}
+          onAuthenticated={handleAuthenticated}
+          onClose={() => setShowAuth(false)}
+        />
       )}
-
-      {refreshError && (
-        <div className="notice" role="status">
-          <span>{refreshError}</span>
-        </div>
-      )}
-
-      {/* Market Simulator */}
-      <section className="panel simulator-panel">
-        <div className="panel-heading">
-          <div>
-            <p className="eyebrow">AUTOMATED ORDER FLOW</p>
-            <h2>Market Simulator</h2>
-          </div>
-
-          <span
-            className={`tag ${
-              simRunning ? 'tag-running' : ''
-            }`}
-          >
-            {simRunning ? 'RUNNING' : 'STOPPED'}
-          </span>
-        </div>
-
-        <p className="subtitle">
-          Generate simulated orders and send them through the
-          Python matching engine.
-        </p>
-
-        <div className="simulator-controls">
-          <button
-            type="button"
-            className="submit buy"
-            disabled={
-              simLoading ||
-              simRunning ||
-              health !== 'Connected'
-            }
-            onClick={() => controlSimulator('start')}
-          >
-            {simLoading && !simRunning
-              ? 'Starting...'
-              : '▶ Start Simulation'}
-          </button>
-
-          <button
-            type="button"
-            className="submit sell"
-            disabled={simLoading || !simRunning}
-            onClick={() => controlSimulator('stop')}
-          >
-            {simLoading && simRunning
-              ? 'Stopping...'
-              : '■ Stop Simulation'}
-          </button>
-
-          <div className="simulator-count">
-            <span>ORDERS GENERATED</span>
-            <strong>{simGenerated.toLocaleString()}</strong>
-          </div>
-        </div>
-      </section>
-
-      {/* Dashboard Metrics */}
-      <section className="metrics">
-        <article className="metric-card">
-          <p>BEST BID</p>
-          <strong className="green">
-            {formatPrice(bestBid)}
-          </strong>
-          <span>Highest buy price</span>
-        </article>
-
-        <article className="metric-card">
-          <p>BEST ASK</p>
-          <strong className="red">
-            {formatPrice(bestAsk)}
-          </strong>
-          <span>Lowest sell price</span>
-        </article>
-
-        <article className="metric-card">
-          <p>ACTIVE ORDERS</p>
-          <strong>{activeOrders}</strong>
-          <span>Orders waiting in the book</span>
-        </article>
-
-        <article className="metric-card">
-          <p>EXECUTED TRADES</p>
-          <strong>{trades.length}</strong>
-          <span>Recorded trade executions</span>
-        </article>
-
-        <article className="metric-card">
-          <p>BID-ASK SPREAD</p>
-          <strong>{formatPrice(spread)}</strong>
-          <span>
-            {spread === null
-              ? 'Waiting for both sides'
-              : 'Price difference in ticks'}
-          </span>
-        </article>
-      </section>
-
-      {/* Order Entry and Order Book */}
-      <section className="main-grid">
-        {/* Order Entry */}
-        <div className="panel">
-          <div className="panel-heading">
+      {activePage === 'market' && (
+        <>
+          {/* Hero */}
+          <section className="hero">
             <div>
-              <p className="eyebrow">ORDER ENTRY</p>
-              <h2>Place an Order</h2>
+              <p className="eyebrow">
+                TRADING ENGINE / LIVE CONSOLE
+              </p>
+
+              <h2>Market Operations</h2>
+
+              <p className="subtitle">
+                Monitor order flow, execute orders, and test the
+                matching engine in real time.
+              </p>
             </div>
 
-            <span className="tag">MANUAL</span>
-          </div>
+            <div className="hero-status">
+              <span className="status-dot online" />
+              SIMULATION ENVIRONMENT
+            </div>
+          </section>
 
-          <form onSubmit={submitOrder} className="order-form">
-            <label htmlFor="side">Order Side</label>
+          {/* User notifications */}
+          {message && (
+            <div className="notice" role="status">
+              <span>{message}</span>
 
-            <div className="side-toggle">
               <button
                 type="button"
-                className={side === 'BUY' ? 'selected buy' : ''}
-                onClick={() => setSide('BUY')}
-                disabled={loading}
+                className="dismiss"
+                onClick={() => setMessage('')}
+                aria-label="Dismiss message"
               >
-                BUY
+                Ã—
+              </button>
+            </div>
+          )}
+
+          {refreshError && (
+            <div className="notice" role="status">
+              <span>{refreshError}</span>
+            </div>
+          )}
+
+          {/* Market Simulator */}
+          <section className="panel simulator-panel">
+            <div className="panel-heading">
+              <div>
+                <p className="eyebrow">AUTOMATED ORDER FLOW</p>
+                <h2>Market Simulator</h2>
+              </div>
+
+              <span
+                className={`tag ${simRunning ? 'tag-running' : ''
+                  }`}
+              >
+                {simRunning ? 'RUNNING' : 'STOPPED'}
+              </span>
+            </div>
+
+            <p className="subtitle">
+              Generate simulated orders and send them through the
+              Python matching engine.
+            </p>
+
+            <div className="simulator-controls">
+              <button
+                type="button"
+                className="submit buy"
+                disabled={
+                  simLoading ||
+                  simRunning ||
+                  health !== 'Connected'
+                }
+                onClick={() => controlSimulator('start')}
+              >
+                {simLoading && !simRunning
+                  ? 'Starting...'
+                  : 'â–¶ Start Simulation'}
               </button>
 
               <button
                 type="button"
-                className={side === 'SELL' ? 'selected sell' : ''}
-                onClick={() => setSide('SELL')}
-                disabled={loading}
+                className="submit sell"
+                disabled={simLoading || !simRunning}
+                onClick={() => controlSimulator('stop')}
               >
-                SELL
+                {simLoading && simRunning
+                  ? 'Stopping...'
+                  : 'â–  Stop Simulation'}
               </button>
+
+              <div className="simulator-count">
+                <span>ORDERS GENERATED</span>
+                <strong>{simGenerated.toLocaleString()}</strong>
+              </div>
             </div>
+          </section>
 
-            <label htmlFor="price">Price (ticks)</label>
+          {/* Dashboard Metrics */}
+          <section className="metrics">
+            <article className="metric-card">
+              <p>BEST BID</p>
+              <strong className="green">
+                {formatPrice(bestBid)}
+              </strong>
+              <span>Highest buy price</span>
+            </article>
 
-            <input
-              id="price"
-              type="number"
-              min="1"
-              step="1"
-              value={price}
-              onChange={(event) => setPrice(event.target.value)}
-              disabled={loading}
-              required
-            />
+            <article className="metric-card">
+              <p>BEST ASK</p>
+              <strong className="red">
+                {formatPrice(bestAsk)}
+              </strong>
+              <span>Lowest sell price</span>
+            </article>
 
-            <label htmlFor="quantity">Quantity</label>
+            <article className="metric-card">
+              <p>ACTIVE ORDERS</p>
+              <strong>{activeOrders}</strong>
+              <span>Orders waiting in the book</span>
+            </article>
 
-            <input
-              id="quantity"
-              type="number"
-              min="1"
-              step="1"
-              value={quantity}
-              onChange={(event) =>
-                setQuantity(event.target.value)
-              }
-              disabled={loading}
-              required
-            />
+            <article className="metric-card">
+              <p>EXECUTED TRADES</p>
+              <strong>{trades.length}</strong>
+              <span>Recorded trade executions</span>
+            </article>
 
-            <button
-              type="submit"
-              className={`submit ${side.toLowerCase()}`}
-              disabled={loading || health !== 'Connected'}
-            >
-              {loading
-                ? 'Submitting...'
-                : `Submit ${side} Order`}
-            </button>
-          </form>
-
-          <p className="form-note">
-            Orders are processed by the ChronosMatch matching
-            engine.
-          </p>
-        </div>
-
-        {/* Order Book */}
-        <div className="panel orderbook-panel">
-          <div className="panel-heading">
-            <div>
-              <p className="eyebrow">MARKET DEPTH</p>
-              <h2>Order Book</h2>
-            </div>
-            <span className="tag">LIVE · TOP 12 LEVELS</span>
-          </div>
-
-          <div className="depth-summary">
-            <div className="depth-summary-item">
-              <span>BEST BID</span>
-              <strong className="green">{formatPrice(bestBid)}</strong>
-            </div>
-            <div className="depth-summary-spread">
-              <span>SPREAD</span>
+            <article className="metric-card">
+              <p>BID-ASK SPREAD</p>
               <strong>{formatPrice(spread)}</strong>
-            </div>
-            <div className="depth-summary-item">
-              <span>BEST ASK</span>
-              <strong className="red">{formatPrice(bestAsk)}</strong>
-            </div>
-          </div>
+              <span>
+                {spread === null
+                  ? 'Waiting for both sides'
+                  : 'Price difference in ticks'}
+              </span>
+            </article>
+          </section>
 
-          <div className="book-columns depth-columns">
-            {/* Asks: lowest sell price first */}
-            <div className="book-side">
-              <div className="depth-side-heading">
-                <h3 className="red">ASKS / SELL</h3>
-                <span>{askLevels.length} levels</span>
+          {/* Order Entry and Order Book */}
+          <section className="main-grid">
+            {/* Order Entry */}
+            <div className="panel">
+              <div className="panel-heading">
+                <div>
+                  <p className="eyebrow">ORDER ENTRY</p>
+                  <h2>Place an Order</h2>
+                </div>
+
+                <span className="tag">MANUAL</span>
               </div>
 
-              <div className="depth-table-header">
-                <span>PRICE</span>
-                <span>ORDERS</span>
-                <span>TOTAL QTY</span>
+              <form onSubmit={submitOrder} className="order-form">
+                <label htmlFor="side">Order Side</label>
+
+                <div className="side-toggle">
+                  <button
+                    type="button"
+                    className={side === 'BUY' ? 'selected buy' : ''}
+                    onClick={() => setSide('BUY')}
+                    disabled={loading}
+                  >
+                    BUY
+                  </button>
+
+                  <button
+                    type="button"
+                    className={side === 'SELL' ? 'selected sell' : ''}
+                    onClick={() => setSide('SELL')}
+                    disabled={loading}
+                  >
+                    SELL
+                  </button>
+                </div>
+
+                <label htmlFor="price">Price (ticks)</label>
+
+                <input
+                  id="price"
+                  type="number"
+                  min="1"
+                  step="1"
+                  value={price}
+                  onChange={(event) => setPrice(event.target.value)}
+                  disabled={loading}
+                  required
+                />
+
+                <label htmlFor="quantity">Quantity</label>
+
+                <input
+                  id="quantity"
+                  type="number"
+                  min="1"
+                  step="1"
+                  value={quantity}
+                  onChange={(event) =>
+                    setQuantity(event.target.value)
+                  }
+                  disabled={loading}
+                  required
+                />
+
+                <button
+                  type="submit"
+                  className={`submit ${side.toLowerCase()}`}
+                  disabled={loading || health !== 'Connected'}
+                >
+                  {loading
+                    ? 'Submitting...'
+                    : `Submit ${side} Order`}
+                </button>
+              </form>
+
+              <p className="form-note">
+                Orders are processed by the ChronosMatch matching
+                engine.
+              </p>
+            </div>
+
+            {/* Order Book */}
+            <div className="panel orderbook-panel">
+              <div className="panel-heading">
+                <div>
+                  <p className="eyebrow">MARKET DEPTH</p>
+                  <h2>Order Book</h2>
+                </div>
+                <span className="tag">LIVE Â· TOP 12 LEVELS</span>
               </div>
 
-              {askLevels.length === 0 ? (
-                <p className="empty">No open sell orders</p>
-              ) : (
-                askLevels.map((level) => (
-                  <div className="depth-row ask-depth-row" key={`ask-${level.price}`}>
-                    <div className="depth-bar-track">
-                      <div
-                        className="depth-fill ask-depth-fill"
-                        style={{
-                          width: `${Math.max(4, (level.quantity / maxAskQuantity) * 100)}%`,
-                        }}
-                      />
-                    </div>
-                    <strong className="red">{formatPrice(level.price)}</strong>
-                    <span>{level.orderCount}</span>
-                    <strong>{level.quantity.toLocaleString()}</strong>
+              <div className="depth-summary">
+                <div className="depth-summary-item">
+                  <span>BEST BID</span>
+                  <strong className="green">{formatPrice(bestBid)}</strong>
+                </div>
+                <div className="depth-summary-spread">
+                  <span>SPREAD</span>
+                  <strong>{formatPrice(spread)}</strong>
+                </div>
+                <div className="depth-summary-item">
+                  <span>BEST ASK</span>
+                  <strong className="red">{formatPrice(bestAsk)}</strong>
+                </div>
+              </div>
+
+              <div className="book-columns depth-columns">
+                {/* Asks: lowest sell price first */}
+                <div className="book-side">
+                  <div className="depth-side-heading">
+                    <h3 className="red">ASKS / SELL</h3>
+                    <span>{askLevels.length} levels</span>
                   </div>
-                ))
-              )}
-            </div>
 
-            {/* Bids: highest buy price first */}
-            <div className="book-side">
-              <div className="depth-side-heading">
-                <h3 className="green">BIDS / BUY</h3>
-                <span>{bidLevels.length} levels</span>
-              </div>
-
-              <div className="depth-table-header">
-                <span>PRICE</span>
-                <span>ORDERS</span>
-                <span>TOTAL QTY</span>
-              </div>
-
-              {bidLevels.length === 0 ? (
-                <p className="empty">No open buy orders</p>
-              ) : (
-                bidLevels.map((level) => (
-                  <div className="depth-row bid-depth-row" key={`bid-${level.price}`}>
-                    <div className="depth-bar-track">
-                      <div
-                        className="depth-fill bid-depth-fill"
-                        style={{
-                          width: `${Math.max(4, (level.quantity / maxBidQuantity) * 100)}%`,
-                        }}
-                      />
-                    </div>
-                    <strong className="green">{formatPrice(level.price)}</strong>
-                    <span>{level.orderCount}</span>
-                    <strong>{level.quantity.toLocaleString()}</strong>
+                  <div className="depth-table-header">
+                    <span>PRICE</span>
+                    <span>ORDERS</span>
+                    <span>TOTAL QTY</span>
                   </div>
-                ))
-              )}
+
+                  {askLevels.length === 0 ? (
+                    <p className="empty">No open sell orders</p>
+                  ) : (
+                    askLevels.map((level) => (
+                      <div className="depth-row ask-depth-row" key={`ask-${level.price}`}>
+                        <div className="depth-bar-track">
+                          <div
+                            className="depth-fill ask-depth-fill"
+                            style={{
+                              width: `${Math.max(4, (level.quantity / maxAskQuantity) * 100)}%`,
+                            }}
+                          />
+                        </div>
+                        <strong className="red">{formatPrice(level.price)}</strong>
+                        <span>{level.orderCount}</span>
+                        <strong>{level.quantity.toLocaleString()}</strong>
+                      </div>
+                    ))
+                  )}
+                </div>
+
+                {/* Bids: highest buy price first */}
+                <div className="book-side">
+                  <div className="depth-side-heading">
+                    <h3 className="green">BIDS / BUY</h3>
+                    <span>{bidLevels.length} levels</span>
+                  </div>
+
+                  <div className="depth-table-header">
+                    <span>PRICE</span>
+                    <span>ORDERS</span>
+                    <span>TOTAL QTY</span>
+                  </div>
+
+                  {bidLevels.length === 0 ? (
+                    <p className="empty">No open buy orders</p>
+                  ) : (
+                    bidLevels.map((level) => (
+                      <div className="depth-row bid-depth-row" key={`bid-${level.price}`}>
+                        <div className="depth-bar-track">
+                          <div
+                            className="depth-fill bid-depth-fill"
+                            style={{
+                              width: `${Math.max(4, (level.quantity / maxBidQuantity) * 100)}%`,
+                            }}
+                          />
+                        </div>
+                        <strong className="green">{formatPrice(level.price)}</strong>
+                        <span>{level.orderCount}</span>
+                        <strong>{level.quantity.toLocaleString()}</strong>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+
+              <p className="depth-caption">
+                Quantities are grouped by price. Bars show relative depth within each side of the book.
+              </p>
             </div>
-          </div>
+          </section>
 
-          <p className="depth-caption">
-            Quantities are grouped by price. Bars show relative depth within each side of the book.
-          </p>
-        </div>
-      </section>
+          {/* Ring Buffer Performance */}
+          <section className="panel performance-panel">
+            <div className="panel-heading">
+              <div>
+                <p className="eyebrow">ENGINE BENCHMARKS</p>
+                <h2>Ring Buffer Performance</h2>
+              </div>
 
-      {/* Ring Buffer Performance */}
-      <section className="panel performance-panel">
-        <div className="panel-heading">
-          <div>
-            <p className="eyebrow">ENGINE BENCHMARKS</p>
-            <h2>Ring Buffer Performance</h2>
-          </div>
+              <span className="tag">RECORDED RESULTS</span>
+            </div>
 
-          <span className="tag">RECORDED RESULTS</span>
-        </div>
+            <p className="performance-note">
+              Previously measured throughput comparison. These
+              values are benchmark results, not live performance
+              measurements.
+            </p>
 
-        <p className="performance-note">
-          Previously measured throughput comparison. These
-          values are benchmark results, not live performance
-          measurements.
-        </p>
+            <div className="benchmark-row">
+              <div className="benchmark-label">
+                <span>Individual writes</span>
+                <strong>96,383 orders/sec</strong>
+              </div>
 
-        <div className="benchmark-row">
-          <div className="benchmark-label">
-            <span>Individual writes</span>
-            <strong>96,383 orders/sec</strong>
-          </div>
+              <div className="benchmark-track">
+                <div className="benchmark-bar individual-bar" />
+              </div>
+            </div>
 
-          <div className="benchmark-track">
-            <div className="benchmark-bar individual-bar" />
-          </div>
-        </div>
+            <div className="benchmark-row">
+              <div className="benchmark-label">
+                <span>Batch writes</span>
+                <strong>234,872 orders/sec</strong>
+              </div>
 
-        <div className="benchmark-row">
-          <div className="benchmark-label">
-            <span>Batch writes</span>
-            <strong>234,872 orders/sec</strong>
-          </div>
+              <div className="benchmark-track">
+                <div className="benchmark-bar batch-bar" />
+              </div>
+            </div>
 
-          <div className="benchmark-track">
-            <div className="benchmark-bar batch-bar" />
-          </div>
-        </div>
+            <div className="benchmark-summary">
+              <div>
+                <span>Batch speedup</span>
+                <strong>2.44Ã—</strong>
+              </div>
 
-        <div className="benchmark-summary">
-          <div>
-            <span>Batch speedup</span>
-            <strong>2.44×</strong>
-          </div>
+              <div>
+                <span>Throughput improvement</span>
+                <strong>+143.69%</strong>
+              </div>
+            </div>
+          </section>
 
-          <div>
-            <span>Throughput improvement</span>
-            <strong>+143.69%</strong>
-          </div>
-        </div>
-      </section>
+          {/* Recent Trades */}
+          <section className="panel trades-panel">
+            <div className="panel-heading">
+              <div>
+                <p className="eyebrow">EXECUTION LOG</p>
+                <h2>Recent Trades</h2>
+              </div>
 
-      {/* Recent Trades */}
-      <section className="panel trades-panel">
-        <div className="panel-heading">
-          <div>
-            <p className="eyebrow">EXECUTION LOG</p>
-            <h2>Recent Trades</h2>
-          </div>
+              <span className="tag">
+                {trades.length} RECORDS
+              </span>
+            </div>
 
-          <span className="tag">
-            {trades.length} RECORDS
-          </span>
-        </div>
+            <div className="table-scroll">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Trade ID</th>
+                    <th>Buy Order</th>
+                    <th>Sell Order</th>
+                    <th>Price</th>
+                    <th>Quantity</th>
+                    <th>Timestamp</th>
+                  </tr>
+                </thead>
 
-        <div className="table-scroll">
-          <table>
-            <thead>
-              <tr>
-                <th>Trade ID</th>
-                <th>Buy Order</th>
-                <th>Sell Order</th>
-                <th>Price</th>
-                <th>Quantity</th>
-                <th>Timestamp</th>
-              </tr>
-            </thead>
-
-            <tbody>
-              {trades.length === 0 ? (
-                <tr>
-                  <td colSpan="6" className="empty">
-                    No trades executed yet. Submit matching
-                    orders or start the market simulator.
-                  </td>
-                </tr>
-              ) : (
-                [...trades]
-                  .reverse()
-                  .slice(0, 20)
-                  .map((trade, index) => (
-                    <tr
-                      key={
-                        trade.trade_id ?? `trade-${index}`
-                      }
-                    >
-                      <td>{trade.trade_id}</td>
-
-                      <td className="green">
-                        {trade.buy_order_id}
+                <tbody>
+                  {trades.length === 0 ? (
+                    <tr>
+                      <td colSpan="6" className="empty">
+                        No trades executed yet. Submit matching
+                        orders or start the market simulator.
                       </td>
-
-                      <td className="red">
-                        {trade.sell_order_id}
-                      </td>
-
-                      <td>{formatPrice(trade.price)}</td>
-
-                      <td>{trade.quantity}</td>
-
-                      <td>{trade.timestamp ?? '—'}</td>
                     </tr>
-                  ))
-              )}
-            </tbody>
-          </table>
-        </div>
-      </section>
+                  ) : (
+                    [...trades]
+                      .reverse()
+                      .slice(0, 20)
+                      .map((trade, index) => (
+                        <tr
+                          key={
+                            trade.trade_id ?? `trade-${index}`
+                          }
+                        >
+                          <td>{trade.trade_id}</td>
 
+                          <td className="green">
+                            {trade.buy_order_id}
+                          </td>
+
+                          <td className="red">
+                            {trade.sell_order_id}
+                          </td>
+
+                          <td>{formatPrice(trade.price)}</td>
+
+                          <td>{trade.quantity}</td>
+
+                          <td>{trade.timestamp ?? 'â€”'}</td>
+                        </tr>
+                      ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        </>
+      )}
+
+      {/* Personal Trade History */}
+      {activePage === 'history' && (
+        <section className="panel trades-panel">
+          <div className="panel-heading">
+            <div>
+              <p className="eyebrow">YOUR ACCOUNT</p>
+              <h2>My Trade History</h2>
+            </div>
+
+            <span className="tag">
+              {myTrades.length} RECORDS
+            </span>
+          </div>
+
+          {tradeHistoryLoading ? (
+            <p className="empty">Loading your trade history...</p>
+          ) : tradeHistoryError ? (
+            <p className="red">{tradeHistoryError}</p>
+          ) : (
+            <div className="table-scroll">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Trade ID</th>
+                    <th>Side</th>
+                    <th>Price</th>
+                    <th>Quantity</th>
+                    <th>Timestamp</th>
+                  </tr>
+                </thead>
+
+                <tbody>
+                  {myTrades.length === 0 ? (
+                    <tr>
+                      <td colSpan="5" className="empty">
+                        You have no executed trades yet.
+                      </td>
+                    </tr>
+                  ) : (
+                    myTrades.map((trade, index) => (
+                      <tr key={trade.trade_id ?? `my-trade-${index}`}>
+                        <td>{trade.trade_id}</td>
+                        <td>{trade.side}</td>
+                        <td>{formatPrice(trade.price)}</td>
+                        <td>{trade.quantity}</td>
+                        <td>{trade.timestamp ?? 'â€”'}</td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
+      )}
+      {/* Personal Portfolio */}
+      {activePage === 'portfolio' && (
+        <section className="panel">
+          <div className="panel-heading">
+            <div>
+              <p className="eyebrow">YOUR ACCOUNT</p>
+              <h2>My Portfolio</h2>
+            </div>
+
+            <span className="tag">PORTFOLIO OVERVIEW</span>
+          </div>
+
+          <section className="metrics">
+            <article className="metric-card">
+              <p>BUY QUANTITY</p>
+              <strong className="green">
+                {portfolio.buyQuantity}
+              </strong>
+              <span>Total purchased quantity</span>
+            </article>
+
+            <article className="metric-card">
+              <p>SELL QUANTITY</p>
+              <strong className="red">
+                {portfolio.sellQuantity}
+              </strong>
+              <span>Total sold quantity</span>
+            </article>
+
+            <article className="metric-card">
+              <p>NET HOLDINGS</p>
+              <strong>{netHoldings}</strong>
+              <span>Remaining quantity</span>
+            </article>
+
+            <article className="metric-card">
+              <p>BUY VALUE</p>
+              <strong>{formatPrice(portfolio.buyValue)}</strong>
+              <span>Total purchase value</span>
+            </article>
+
+            <article className="metric-card">
+              <p>SELL VALUE</p>
+              <strong>{formatPrice(portfolio.sellValue)}</strong>
+              <span>Total sale value</span>
+            </article>
+          </section>
+        </section>
+      )}
       {/* Footer */}
+
       <footer className="footer">
-        <span>CHRONOSMATCH · DEVELOPMENT BUILD</span>
+        <span>CHRONOSMATCH Â· DEVELOPMENT BUILD</span>
 
         <span>
-          Educational trading simulation — not a live exchange
+          Educational trading simulation â€” not a live exchange
         </span>
       </footer>
     </main>

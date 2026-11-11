@@ -1,4 +1,3 @@
-
 """FastAPI endpoints for ChronosMatch API."""
 
 import asyncio
@@ -7,6 +6,7 @@ from itertools import count
 from time import perf_counter
 
 from fastapi import (
+    Depends,
     FastAPI,
     HTTPException,
     WebSocket,
@@ -15,12 +15,22 @@ from fastapi import (
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
+from .auth_routes import (
+    get_current_user,
+)
+from .auth_routes import (
+    router as auth_router,
+)
+from .database import create_tables
 from .market_simulator import MarketSimulator
 from .matching_engine import MatchingEngine
 from .models import Order, OrderSide
-from .repositories import save_order, save_trades
-from .auth_routes import router as auth_router
-from .database import create_tables
+from .repositories import (
+    get_user_trades,
+    order_id_exists,
+    save_order,
+    save_trades,
+)
 from .websocket_manager import ConnectionManager
 
 
@@ -102,20 +112,18 @@ def capture_resting_orders() -> dict[str, Order]:
 
     book = engine.order_book
 
-    return {
-        order.order_id: order
-        for order in list(book._bids) + list(book._asks)
-    }
+    return {order.order_id: order for order in list(book._bids) + list(book._asks)}
 
 
 def persist_submission(
     order: Order,
     trades: list,
     resting_orders_before: dict[str, Order],
+    user_id: int | None = None,
 ) -> None:
     """Persist an incoming order, affected resting orders, and trades."""
 
-    save_order(order)
+    save_order(order, user_id=user_id)
 
     affected_order_ids = set()
 
@@ -140,24 +148,27 @@ async def broadcast_market_update(
 ) -> None:
     """Broadcast order, order-book, and trade updates."""
 
-    await manager.broadcast({
-        "event": "order_submitted",
-        "data": order_to_dict(order),
-    })
+    await manager.broadcast(
+        {
+            "event": "order_submitted",
+            "data": order_to_dict(order),
+        }
+    )
 
-    await manager.broadcast({
-        "event": "order_book_update",
-        "data": get_orderbook(),
-    })
+    await manager.broadcast(
+        {
+            "event": "order_book_update",
+            "data": get_orderbook(),
+        }
+    )
 
     if trades:
-        await manager.broadcast({
-            "event": "trade_executed",
-            "data": [
-                trade_to_dict(trade)
-                for trade in trades
-            ],
-        })
+        await manager.broadcast(
+            {
+                "event": "trade_executed",
+                "data": [trade_to_dict(trade) for trade in trades],
+            }
+        )
 
 
 @app.websocket("/ws/market")
@@ -167,13 +178,15 @@ async def market_websocket(websocket: WebSocket):
     await manager.connect(websocket)
 
     try:
-        await websocket.send_json({
-            "event": "market_snapshot",
-            "data": {
-                "orderbook": get_orderbook(),
-                "trades": get_trades(),
-            },
-        })
+        await websocket.send_json(
+            {
+                "event": "market_snapshot",
+                "data": {
+                    "orderbook": get_orderbook(),
+                    "trades": get_trades(),
+                },
+            }
+        )
 
         while True:
             await websocket.receive_text()
@@ -203,15 +216,13 @@ def get_orderbook():
     bids = [
         order_to_dict(order)
         for order in book._bids
-        if order.remaining_quantity is not None
-        and order.remaining_quantity > 0
+        if order.remaining_quantity is not None and order.remaining_quantity > 0
     ]
 
     asks = [
         order_to_dict(order)
         for order in book._asks
-        if order.remaining_quantity is not None
-        and order.remaining_quantity > 0
+        if order.remaining_quantity is not None and order.remaining_quantity > 0
     ]
 
     best_bid = book.get_best_bid()
@@ -220,21 +231,14 @@ def get_orderbook():
     return {
         "bids": bids,
         "asks": asks,
-        "best_bid": (
-            order_to_dict(best_bid) if best_bid else None
-        ),
-        "best_ask": (
-            order_to_dict(best_ask) if best_ask else None
-        ),
+        "best_bid": (order_to_dict(best_bid) if best_bid else None),
+        "best_ask": (order_to_dict(best_ask) if best_ask else None),
     }
 
 
 @app.get("/trades")
 def get_trades():
-    return [
-        trade_to_dict(trade)
-        for trade in engine.trades
-    ]
+    return [trade_to_dict(trade) for trade in engine.trades]
 
 
 @app.get("/metrics")
@@ -242,9 +246,7 @@ def get_metrics():
     """Return metrics for API-submitted orders only."""
 
     average_latency_ms = (
-        total_matching_latency_seconds / orders_processed * 1000
-        if orders_processed
-        else 0.0
+        total_matching_latency_seconds / orders_processed * 1000 if orders_processed else 0.0
     )
 
     matching_operations_per_second = (
@@ -258,14 +260,15 @@ def get_metrics():
         "total_trades": api_total_trades,
         "executed_quantity": api_executed_quantity,
         "average_matching_latency_ms": average_latency_ms,
-        "matching_operations_per_second": (
-            matching_operations_per_second
-        ),
+        "matching_operations_per_second": (matching_operations_per_second),
     }
 
 
 @app.post("/orders")
-async def submit_order(request: OrderRequest):
+async def submit_order(
+    request: OrderRequest,
+    user=Depends(get_current_user),
+):
     global orders_processed
     global total_matching_latency_seconds
     global api_total_trades
@@ -277,11 +280,20 @@ async def submit_order(request: OrderRequest):
             detail="order_id must not be empty",
         )
 
-    order_id = (
-        request.order_id
-        if request.order_id is not None
-        else f"WEB-{next(order_ids)}"
-    )
+    if request.order_id is None:
+        order_id = f"WEB-{next(order_ids)}"
+
+        while order_id_exists(order_id):
+            order_id = f"WEB-{next(order_ids)}"
+
+    else:
+        order_id = request.order_id
+
+    if order_id_exists(order_id):
+        raise HTTPException(
+            status_code=409,
+            detail="Order ID already exists. Please use a unique order ID.",
+        )
 
     try:
         order = Order(
@@ -302,15 +314,14 @@ async def submit_order(request: OrderRequest):
             order,
             trades,
             resting_orders_before,
+            user_id=user.id,
         )
 
         orders_processed += 1
         total_matching_latency_seconds += elapsed
 
         api_total_trades += len(trades)
-        api_executed_quantity += sum(
-            trade.quantity for trade in trades
-        )
+        api_executed_quantity += sum(trade.quantity for trade in trades)
 
     except (TypeError, ValueError) as exc:
         raise HTTPException(
@@ -322,10 +333,7 @@ async def submit_order(request: OrderRequest):
     await broadcast_market_update(order, trades)
 
     order_data = order_to_dict(order)
-    trade_data = [
-        trade_to_dict(trade)
-        for trade in trades
-    ]
+    trade_data = [trade_to_dict(trade) for trade in trades]
 
     return {
         "order": order_data,
@@ -367,10 +375,12 @@ async def start_simulator():
 
     simulator_task = asyncio.create_task(_run_simulator())
 
-    await manager.broadcast({
-        "event": "market_status",
-        "data": {"status": "running"},
-    })
+    await manager.broadcast(
+        {
+            "event": "market_status",
+            "data": {"status": "running"},
+        }
+    )
 
     return {"status": "running"}
 
@@ -389,21 +399,65 @@ async def stop_simulator():
 
     simulator_task = None
 
-    await manager.broadcast({
-        "event": "market_status",
-        "data": {"status": "stopped"},
-    })
+    await manager.broadcast(
+        {
+            "event": "market_status",
+            "data": {"status": "stopped"},
+        }
+    )
 
     return {"status": "stopped"}
 
 
 @app.get("/simulator/status")
 async def get_simulator_status():
-    running = (
-        simulator_task is not None and not simulator_task.done()
-    )
+    running = simulator_task is not None and not simulator_task.done()
 
     return {
         "running": running,
         "generated": simulator_orders_generated,
+    }
+
+
+@app.get("/my/trades")
+async def get_my_trades(
+    user=Depends(get_current_user),
+):
+    """Return trade history for the authenticated user."""
+    return get_user_trades(user.id)
+
+
+@app.get("/my/portfolio")
+async def get_my_portfolio(
+    user=Depends(get_current_user),
+):
+    """Return portfolio summary for the authenticated user."""
+
+    trades = get_user_trades(user.id)
+
+    total_buy_quantity = 0
+    total_sell_quantity = 0
+    total_buy_value = 0
+    total_sell_value = 0
+
+    for trade in trades:
+        quantity = trade["quantity"]
+        value = trade["price"] * quantity
+        side = trade["side"]
+
+        if side in ("BUY", "BOTH"):
+            total_buy_quantity += quantity
+            total_buy_value += value
+
+        if side in ("SELL", "BOTH"):
+            total_sell_quantity += quantity
+            total_sell_value += value
+
+    return {
+        "trade_count": len(trades),
+        "total_buy_quantity": total_buy_quantity,
+        "total_sell_quantity": total_sell_quantity,
+        "net_quantity": total_buy_quantity - total_sell_quantity,
+        "total_buy_value": total_buy_value,
+        "total_sell_value": total_sell_value,
     }

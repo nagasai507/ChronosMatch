@@ -32,6 +32,11 @@ class OrderRecord(Base):
     timestamp: Mapped[int] = mapped_column(
         BigInteger, nullable=False
     )
+    user_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey("users.id"),
+        nullable=True,
+    )
 
 
 class TradeRecord(Base):

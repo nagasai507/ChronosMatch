@@ -15,7 +15,6 @@ if str(SRC_DIR) not in sys.path:
 
 from chronosmatch.ring_buffer import BinaryOrder, RingBuffer
 
-
 ORDER_COUNT = 1_000_000
 CAPACITY = 1024
 BATCH_SIZE = 64

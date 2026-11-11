@@ -45,5 +45,5 @@ def get_db():
 
 def create_tables():
     """Create all database tables."""
-    from . import db_models
+    from . import db_models  # noqa: F401
     Base.metadata.create_all(bind=engine)

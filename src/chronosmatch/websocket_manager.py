@@ -2,6 +2,7 @@
 """Manage WebSocket connections and market event broadcasting."""
 
 from fastapi import WebSocket
+from starlette.websockets import WebSocketDisconnect
 
 
 class ConnectionManager:
@@ -24,7 +25,7 @@ class ConnectionManager:
         for connection in self.active_connections.copy():
             try:
                 await connection.send_json(message)
-            except Exception:
+            except WebSocketDisconnect:
                 disconnected.append(connection)
 
         for connection in disconnected:
