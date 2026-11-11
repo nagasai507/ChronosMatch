@@ -1,15 +1,13 @@
 
 """Integration tests for the ChronosMatch trading engine."""
 
-import pytest
 import asyncio
-from chronosmatch.ring_buffer import BinaryOrder, RingBuffer
+
 from chronosmatch.market_firehose import write_orders_to_buffer
 from chronosmatch.market_simulator import MarketSimulator
-from chronosmatch.ring_buffer import RingBuffer
-
-from chronosmatch.models import Order, OrderSide
 from chronosmatch.matching_engine import MatchingEngine
+from chronosmatch.models import Order, OrderSide
+from chronosmatch.ring_buffer import BinaryOrder, RingBuffer
 
 
 def make_order(order_id, side, price, quantity, timestamp=0):
@@ -114,7 +112,7 @@ def test_simulator_firehose_ring_buffer_to_matching_engine():
     asyncio.run(run_test())
 
 def test_ring_buffer_orders_produce_a_real_trade():
-    from chronosmatch.ring_buffer import BinaryOrder, RingBuffer
+    from chronosmatch.ring_buffer import RingBuffer
 
     buffer = RingBuffer(capacity=2)
     try:

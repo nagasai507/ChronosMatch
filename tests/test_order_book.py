@@ -1,5 +1,5 @@
-from chronosmatch.order_book import OrderBook
 from chronosmatch.models import Order, OrderSide
+from chronosmatch.order_book import OrderBook
 
 
 def make_order(order_id, side, price, timestamp, quantity=10):

@@ -1,15 +1,14 @@
 """Authentication utilities for ChronosMatch."""
 
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from dotenv import load_dotenv
-from jose import JWTError, jwt
-from passlib.context import CryptContext
 from fastapi import HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
-
+from jose import JWTError, jwt
+from passlib.context import CryptContext
 
 # Load environment variables from the project root.
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -63,7 +62,7 @@ def create_access_token(
     """Create a signed JWT access token."""
     payload = data.copy()
 
-    expire = datetime.now(timezone.utc) + (
+    expire = datetime.now(UTC) + (
         expires_delta
         if expires_delta is not None
         else timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)

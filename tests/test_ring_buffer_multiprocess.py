@@ -3,12 +3,11 @@ import multiprocessing as mp
 import time
 
 from chronosmatch.ring_buffer import (
-    BinaryOrder,
-    RECORD_SIZE,
     HEADER_SIZE,
+    RECORD_SIZE,
+    BinaryOrder,
     RingBuffer,
 )
-
 
 ORDER_COUNT = 1_000
 CAPACITY = 64

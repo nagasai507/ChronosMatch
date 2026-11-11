@@ -3,8 +3,8 @@
 
 import pytest
 
-from chronosmatch.models import Order, OrderSide
 from chronosmatch.matching_engine import MatchingEngine
+from chronosmatch.models import Order, OrderSide
 
 
 def make_order(order_id, side, price, quantity, timestamp=0):

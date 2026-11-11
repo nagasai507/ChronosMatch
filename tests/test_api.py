@@ -1,5 +1,6 @@
 
 from itertools import count
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -8,8 +9,19 @@ from chronosmatch import api
 
 
 @pytest.fixture
-def client():
+def client(monkeypatch):
     """Create a test client with isolated API state."""
+
+    # Prevent tests from connecting to the real PostgreSQL database.
+    monkeypatch.setattr(api, "create_tables", lambda: None)
+    monkeypatch.setattr(api, "persist_submission", lambda *args, **kwargs: None)
+    monkeypatch.setattr(api, "order_id_exists", lambda order_id: False)
+
+    # Provide a mock authenticated user.
+    api.app.dependency_overrides[api.get_current_user] = (
+        lambda: SimpleNamespace(id=1)
+    )
+
     api.engine = api.MatchingEngine()
     api.order_ids = count(1)
     api.timestamps = count(1)
@@ -23,8 +35,11 @@ def client():
     api.api_total_trades = 0
     api.api_executed_quantity = 0
 
-    with TestClient(api.app) as test_client:
-        yield test_client
+    try:
+        with TestClient(api.app) as test_client:
+            yield test_client
+    finally:
+        api.app.dependency_overrides.pop(api.get_current_user, None)
 
 
 def test_root_endpoint(client):

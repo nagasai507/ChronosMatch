@@ -8,7 +8,16 @@ version = "0.1.0"
 description = "Educational Python price-time-priority order-matching engine"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+  "fastapi>=0.115",
+  "uvicorn>=0.30",
+  "SQLAlchemy>=2.0",
+  "psycopg[binary]>=3.2",
+  "python-dotenv>=1.0",
+  "python-jose[cryptography]>=3.3",
+  "passlib[bcrypt]>=1.7.4",
+  "python-multipart>=0.0.9",
+]
 
 [project.optional-dependencies]
 dev = [
@@ -27,3 +36,6 @@ addopts = "-ra"
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+
+[tool.ruff.lint]
+ignore = ["B008"]

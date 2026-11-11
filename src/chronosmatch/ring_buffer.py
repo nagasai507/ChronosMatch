@@ -15,10 +15,10 @@ A disk-backed temporary spool avoids retaining large batches in RAM.
 
 import struct
 import tempfile
+from collections.abc import Iterable
 from dataclasses import dataclass
 from multiprocessing import Lock
 from multiprocessing.shared_memory import SharedMemory
-from typing import Iterable
 
 ORDER_RECORD = struct.Struct("<QBQQQ")
 RECORD_SIZE = ORDER_RECORD.size

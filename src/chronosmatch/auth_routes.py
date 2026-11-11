@@ -6,13 +6,12 @@ from pydantic import BaseModel, Field
 from sqlalchemy.exc import IntegrityError
 
 from .auth import (
-    hash_password,
-    verify_password,
     create_access_token,
+    hash_password,
     verify_access_token,
+    verify_password,
 )
 from .user_repository import create_user, get_user_by_email
-
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
@@ -87,7 +86,36 @@ def register_user(request: RegisterRequest):
     }
 
 
-@router.post("/login")
+@router.post(
+    "/login",
+    openapi_extra={
+        "requestBody": {
+            "required": True,
+            "content": {
+                "application/json": {
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "email": {"type": "string"},
+                            "password": {"type": "string"},
+                        },
+                        "required": ["email", "password"],
+                    }
+                },
+                "application/x-www-form-urlencoded": {
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "username": {"type": "string"},
+                            "password": {"type": "string"},
+                        },
+                        "required": ["username", "password"],
+                    }
+                },
+            },
+        }
+    },
+)
 async def login_user(request: Request):
     """Accept both Swagger form data and JSON login requests."""
 
